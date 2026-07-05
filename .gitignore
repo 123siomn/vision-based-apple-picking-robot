@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Keil / STM32 build output
+Objects/
+Listings/
+*.axf
+*.hex
+*.bin
+*.o
+*.d
+*.crf
+*.htm
+*.map
+
+# VS Code
+.vscode/
+
+# System
+.DS_Store
+Thumbs.db
+
+# Secrets
+*.key
+*.pem
+config_secret.py
