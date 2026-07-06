@@ -2,7 +2,12 @@
 __pycache__/
 *.pyc
 .venv/
+yolo_env/
 .env
+
+# YOLO output
+runs/
+.tmp/
 
 # Keil / STM32 build output
 Objects/
