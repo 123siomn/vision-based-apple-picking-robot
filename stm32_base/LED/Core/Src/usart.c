@@ -19,24 +19,26 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "usart.h"
+#include "base_protocol.h"
 
 /* USER CODE BEGIN 0 */
 typedef struct __FILE FILE;
-extern uint8_t Usart1_ReadBuf[255];	//??1 ????
-extern uint8_t Usart1_ReadCount;	//??1 ??????
 
-extern int8_t g_cThisState ;//????
 
-extern uint8_t g_ucUsart2ReceiveData;  //??????????
+extern uint8_t g_ucUsart2ReceiveData;  // 串口2单字节接收缓存，当前暂时保留备用
 
- uint8_t state = 0;//????static ??
  
-int g_lHW_State = 0;//?????? ???????????????????
-// Save the tick count of the last valid camera frame.
-volatile uint32_t g_ulCameraFrameTickMs = 0;
 
-uint8_t g_ucaUsart2ReceiveBuffer[10];//?????????????
-uint8_t g_ucUsart2ReceivCounter=0;//???????
+
+#define BASE_CMD_RX_BUFFER_SIZE 64
+
+// USART1 现在预留给树莓派向底盘 STM32 下发控制命令。
+// 当前只做简单的按行接收缓冲，等树莓派协议确定后再补充具体解析。
+// 这样后续扩展命令时，不需要再改串口中断入口。
+static uint8_t g_ucaBaseCmdRxBuffer[BASE_CMD_RX_BUFFER_SIZE];
+static uint8_t g_ucaBaseCmdLine[BASE_CMD_RX_BUFFER_SIZE];
+static uint8_t g_ucBaseCmdRxIndex = 0;
+static volatile uint8_t g_ucBaseCmdLineReady = 0;
 	
 /* USER CODE END 0 */
 
@@ -295,142 +297,98 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
 
 /* USER CODE BEGIN 1 */
 /**
-* @brief ???printf (???fputc)?
-					????????????->Target->UseMicro LIB 
-					?????C???typedef struct __FILE FILE;
-					??????#include "stdio.h"
-* @param 
-* @return 
+* @brief  printf 重定向函数
+* @note   当前调试输出走 USART3，避免占用树莓派通信使用的 USART1。
+* @param  ch: 待发送字符
+* @param  stream: 标准库文件流参数，未使用
+* @return 已发送字符
 */
 int fputc(int ch,FILE *stream)
 {
-	HAL_UART_Transmit(&huart3,( uint8_t *)&ch,1,0xFFFF);// Keep USART1 free for the arm board link
+	HAL_UART_Transmit(&huart3,( uint8_t *)&ch,1,0xFFFF);// printf 调试输出走串口3，避免占用树莓派使用的串口1
 	return ch;
 }
-//??????????
-uint8_t Usart_WaitReasFinish(void)
-{
-	static uint16_t Usart_LastReadCount = 0;//????????
-	if(Usart1_ReadCount == 0)
-	{
-		Usart_LastReadCount = 0;//?????
-		return 1;//?????????
-	}
-	if(Usart1_ReadCount == Usart_LastReadCount)//??????????????
-	{
-		Usart1_ReadCount = 0;//?????????
-		Usart_LastReadCount = 0;//???????
-		return 0;//???????
-	}
-	Usart_LastReadCount = Usart1_ReadCount;//?????????????
-	return 2;//???????
-}
-/*******************
-*  @brief  ??????????? ????K210?openmv?
-*  @param  data:??????????
-*  @return  
-*
-*******************/
-void usartCamera_Receive_Data(uint8_t data)
-{
-	static uint8_t state = 0;//????static ??
-	
-	if(state==0&&data==0xA5) //??????????0xA5
-	{
-		state=1;//???0xA5 ??state=1 ?????????
-		//???????? "g_ucUsart2ReceivCounter++",??????????g_ucUsart2ReceivCounter ???0???????g_ucaUsart2ReceiveBuffer[0]=data???g_ucUsart2ReceivCounter++???g_ucUsart2ReceivCounter = 1?
-		g_ucaUsart2ReceiveBuffer[g_ucUsart2ReceivCounter++] = data;
-	}
-	else if(state==1&&data==0xA6) //????????0xA6
-	{
-		state=2;//????????0xA6 ??state=2 ?????????
-		g_ucaUsart2ReceiveBuffer[g_ucUsart2ReceivCounter++] = data;//????
-	}
-	else if(state==2)//???????0XA5 0XA6 ?????
-	{
-		g_ucaUsart2ReceiveBuffer[g_ucUsart2ReceivCounter++]=data;
-		if(g_ucUsart2ReceivCounter>9||data==0x5B) state=3;  //????9????????0X5B ??????
-	}
-	else if(state==3) //???
-	{
-		if(g_ucaUsart2ReceiveBuffer[g_ucUsart2ReceivCounter-1] == 0x5B)  //?? ???????0x5B?? ???0x5B ??????? ????
-		{
-			state = 0;
-			g_ulCameraFrameTickMs = HAL_GetTick();
-			//??????????????????????????????
-			g_ucUsart2ReceivCounter = 0;//?????
-			//????????????????
 
-			//1.???? ???? ?? ?????????: [0]?[1]:???[2]:???????????????[3]:??????[4]:??????[5]:??????[6]:??????[7]:??
-				 if(g_ucaUsart2ReceiveBuffer[6]==0&&g_ucaUsart2ReceiveBuffer[5]==0&&g_ucaUsart2ReceiveBuffer[3]==0&&g_ucaUsart2ReceiveBuffer[2]==0)
-				 {
-					g_cThisState=0;//??
-					g_lHW_State=22222;//???????OLED????? ??? ???????? ?????????
-				 }
-				 if(g_ucaUsart2ReceiveBuffer[6]==0&&g_ucaUsart2ReceiveBuffer[5]==1&&g_ucaUsart2ReceiveBuffer[3]==0&&g_ucaUsart2ReceiveBuffer[2]==0)
-				 {
-					g_cThisState=-1;//????
-					g_lHW_State=22212;	//??????? ????
-				 }
-				 if(g_ucaUsart2ReceiveBuffer[6]==1&&g_ucaUsart2ReceiveBuffer[5]==0&&g_ucaUsart2ReceiveBuffer[3]==0&&g_ucaUsart2ReceiveBuffer[2]==0)
-				 {g_cThisState=-2;//????
-				 g_lHW_State=22221;
-				 }
-				 if(g_ucaUsart2ReceiveBuffer[6]==1&&g_ucaUsart2ReceiveBuffer[5]==1&&g_ucaUsart2ReceiveBuffer[3]==0&&g_ucaUsart2ReceiveBuffer[2]==0)
-				 {g_cThisState=-3;//????
-				 g_lHW_State=22211;
-				 }
-				 if(g_ucaUsart2ReceiveBuffer[6]==0&&g_ucaUsart2ReceiveBuffer[5]==0&&g_ucaUsart2ReceiveBuffer[3]==1&&g_ucaUsart2ReceiveBuffer[2]==0)
-				 {g_cThisState=1;//????
-				 g_lHW_State=21222;
-				 }
-                 if(g_ucaUsart2ReceiveBuffer[6]==0&&g_ucaUsart2ReceiveBuffer[5]==0&&g_ucaUsart2ReceiveBuffer[3]==0&&g_ucaUsart2ReceiveBuffer[2]==1)
-				 {g_cThisState=2;//????
-				 g_lHW_State=12222;
-				 }
-                 if(g_ucaUsart2ReceiveBuffer[6]==0&&g_ucaUsart2ReceiveBuffer[5]==0&&g_ucaUsart2ReceiveBuffer[3]==1&&g_ucaUsart2ReceiveBuffer[2]==1)
-				 {g_cThisState=3;//????
-				 g_lHW_State=11222;
-				 }
+/**
+* @brief  接收树莓派发来的单字节命令数据
+* @note   只负责把 USART1 中断收到的字节拼成一行完整命令，不在中断里执行电机动作。
+* @param  data: USART1 收到的单字节数据
+* @return 无
+*/
+void BaseCmd_ReceiveByte(uint8_t data)
+{
+	uint8_t i;
 
-				//2.??????
-				for(int i=0;i<10;i++) g_ucaUsart2ReceiveBuffer[i]=0x00;//????
-				
-		}
-		else //????????????????
+	// 树莓派命令暂定为按行发送。
+	// 后续可扩展示例："STOP\n"、"MOVE 0.5 0.5\n"。
+	if((data == '\n') || (data == '\r'))
+	{
+		if(g_ucBaseCmdRxIndex == 0)
 		{
-			state=0;
-			g_ucUsart2ReceivCounter =0;
-			for(int i=0;i<10;i++) g_ucaUsart2ReceiveBuffer[i]=0x00;//????
+			return;
 		}
+
+		g_ucaBaseCmdRxBuffer[g_ucBaseCmdRxIndex] = '\0';
+		for(i = 0; i <= g_ucBaseCmdRxIndex; i++)
+		{
+			g_ucaBaseCmdLine[i] = g_ucaBaseCmdRxBuffer[i];
+		}
+		g_ucBaseCmdRxIndex = 0;
+		g_ucBaseCmdLineReady = 1;
+		return;
+	}
+
+	if(g_ucBaseCmdRxIndex < (BASE_CMD_RX_BUFFER_SIZE - 1))
+	{
+		g_ucaBaseCmdRxBuffer[g_ucBaseCmdRxIndex++] = data;
 	}
 	else
-	{	//??????
-		state=0;
-		g_ucUsart2ReceivCounter =0;
-		for(int i=0;i<10;i++) g_ucaUsart2ReceiveBuffer[i]=0x00;//????
+	{
+		// 缓冲区溢出保护：丢弃当前半包命令，等待下一行重新开始。
+		g_ucBaseCmdRxIndex = 0;
 	}
 }
 
-/* UART ?????? ?????? */
+/**
+* @brief  树莓派底盘命令处理任务
+* @note   由 main() 的 while(1) 周期调用，把完整命令行交给 base_protocol.c 解析。
+* @param  无
+* @return 无
+*/
+void BaseCmd_Task(void)
+{
+	if(g_ucBaseCmdLineReady == 0)
+	{
+		return;
+	}
+
+	g_ucBaseCmdLineReady = 0;
+
+	// 串口层只负责收包，具体协议解析和底盘动作分发放到独立文件。
+	BaseProtocol_HandleLine((const char *)g_ucaBaseCmdLine);
+}
+
+
+/**
+* @brief  UART 错误回调函数
+* @note   当前主要处理串口溢出错误，保留 USART2 备用接收恢复逻辑。
+* @param  huart: 发生错误的 UART 句柄
+* @return 无
+*/
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
-    if(__HAL_UART_GET_FLAG(huart,UART_FLAG_ORE) != RESET) //??__HAL_UART_GET_FLAG???UART?overrun???????????????????RESET???overrun?????????????overrun??
+    if(__HAL_UART_GET_FLAG(huart,UART_FLAG_ORE) != RESET) // 检查 UART 是否发生接收溢出错误
     {
-        __HAL_UART_CLEAR_OREFLAG(huart);//??__HAL_UART_CLEAR_OREFLAG???UART?overrun?????
-        HAL_UART_Receive_IT(&huart2,&g_ucUsart2ReceiveData,1);  //??HAL?????UART2?????????????????1??
+        __HAL_UART_CLEAR_OREFLAG(huart);// 清除接收溢出错误标志
+        HAL_UART_Receive_IT(&huart2,&g_ucUsart2ReceiveData,1);  // 恢复 USART2 单字节中断接收
     }
 }
 
 
-// Return 1 if the camera delivered a recent valid frame.
-uint8_t usartCamera_HasRecentFrame(uint32_t timeout_ms)
-{
-	return ((HAL_GetTick() - g_ulCameraFrameTickMs) <= timeout_ms) ? 1u : 0u;
-}
 
 
 /* USER CODE END 1 */
+
 
 
 

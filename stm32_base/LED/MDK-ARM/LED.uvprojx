@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+﻿<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
 <Project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="project_projx.xsd">
 
   <SchemaVersion>2.1</SchemaVersion>
@@ -336,7 +336,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F103xB</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F1xx/Include;../Drivers/CMSIS/Include;../HARDWARE/OLED;../HARDWARE/MOTOR;../HARDWARE/NIMING;../HARDWARE/PID;../HARDWARE/CJSON;../HARDWARE/HC_SR04;../HARDWARE/MPU6050;../HARDWARE/MPU6050/eMPL</IncludePath>
+              <IncludePath>../Core/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F1xx/Include;../Drivers/CMSIS/Include;../HARDWARE/OLED;../HARDWARE/MOTOR;../HARDWARE/PID;../HARDWARE/HC_SR04;../HARDWARE/MPU6050;../HARDWARE/MPU6050/eMPL</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -564,6 +564,16 @@
                   </Cads>
                 </FileArmAds>
               </FileOption>
+            </File>
+            <File>
+              <FileName>base_protocol.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/base_protocol.c</FilePath>
+            </File>
+            <File>
+              <FileName>base_control.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/base_control.c</FilePath>
             </File>
             <File>
               <FileName>stm32f1xx_it.c</FileName>
@@ -836,19 +846,9 @@
               <FilePath>..\HARDWARE\MOTOR\motor.c</FilePath>
             </File>
             <File>
-              <FileName>niming.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\HARDWARE\NIMING\niming.c</FilePath>
-            </File>
-            <File>
               <FileName>pid.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\HARDWARE\PID\pid.c</FilePath>
-            </File>
-            <File>
-              <FileName>cJSON.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\HARDWARE\CJSON\cJSON.c</FilePath>
             </File>
             <File>
               <FileName>HC_SR04.c</FileName>
@@ -898,3 +898,6 @@
   </RTE>
 
 </Project>
+
+
+

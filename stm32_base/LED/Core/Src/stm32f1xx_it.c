@@ -25,7 +25,6 @@
 #include "oled.h"
 #include "stdio.h"
 #include "motor.h"
-#include "niming.h"
 #include "pid.h"
 
 
@@ -46,23 +45,20 @@
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 
-short Encode1Count = 0;//??1?????? short???
-short Encode2Count = 0;//??2?????? short???
-float Motor1Speed = 0.00;//??1?? ?/s
-float Motor2Speed = 0.00;//??2?? ?/s
-uint16_t TimerCount = 0;//??????
+short Encode1Count = 0;// 电机1编码器计数
+short Encode2Count = 0;// 电机2编码器计数
+float Motor1Speed = 0.00;// 电机1当前速度，单位约为 cm/s
+float Motor2Speed = 0.00;// 电机2当前速度，单位约为 cm/s
+uint16_t TimerCount = 0;// 定时器节拍计数
 
-uint8_t Usart1_ReadBuf[256];	//??1 ????
-uint8_t Usart1_ReadCount = 0;	//??1 ??????
 extern tPid pidMotor1Speed;
 extern tPid pidMotor2Speed;
-extern uint8_t g_ucUsart3ReceiveData;  //??????????
-extern uint8_t g_ucUsart2ReceiveData;  //??????????
+extern uint8_t g_ucUsart3ReceiveData;  // 串口3单字节接收缓存
+extern uint8_t g_ucUsart2ReceiveData;  // 串口2单字节接收缓存
+extern uint8_t g_ucUsart1ReceiveData;  // 串口1接收树莓派命令的单字节缓存
 
-float Mileage;//??? ??cm
+float Mileage;// 底盘累计里程，单位 cm
 
-extern tPid pidMPU6050YawMovement;  //??6050??? ???????PID??
-extern uint8_t g_ucMode;//??????
 
 
 /* USER CODE END PM */
@@ -288,15 +284,17 @@ void TIM4_IRQHandler(void)
 }
 
 /**
-  * @brief This function handles USART1 global interrupt.
+  * @brief 处理 USART1 全局中断，当前用于接收树莓派下发到底盘的命令字节。
   */
 void USART1_IRQHandler(void)
 {
   /* USER CODE BEGIN USART1_IRQn 0 */
-  if(__HAL_UART_GET_FLAG(&huart1,UART_FLAG_RXNE))//??huart1 ??????
+  if(__HAL_UART_GET_FLAG(&huart1,UART_FLAG_RXNE))
   {
-		if(Usart1_ReadCount >= 255) Usart1_ReadCount = 0;//??????????
-		HAL_UART_Receive(&huart1,&Usart1_ReadBuf[Usart1_ReadCount++],1,1000);//???? Usart1_ReadCount++:????
+		// USART1 现在作为树莓派到底盘 STM32 的命令通道。
+		// 中断里只接收单字节并放入命令缓冲，具体解析放到主循环任务里。
+		HAL_UART_Receive(&huart1,&g_ucUsart1ReceiveData,1,1000);
+		BaseCmd_ReceiveByte(g_ucUsart1ReceiveData);
   }
   /* USER CODE END USART1_IRQn 0 */
   HAL_UART_IRQHandler(&huart1);
@@ -306,7 +304,7 @@ void USART1_IRQHandler(void)
 }
 
 /**
-  * @brief This function handles USART2 global interrupt.
+  * @brief 处理 USART2 全局中断，当前旧视觉解析已删除，串口暂作备用。
   */
 void USART2_IRQHandler(void)
 {
@@ -349,32 +347,32 @@ void EXTI15_10_IRQHandler(void)
 
 /* USER CODE BEGIN 1 */
 /*******************
-*  @brief  ???????
+*  @brief  定时器周期回调函数
 *  @param  
 *  @return  
 *
 *******************/
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-	if(htim == &htim1)//htim1  500HZ 2ms????
+	if(htim == &htim1)// htim1 以 500Hz 运行，每 2ms 进入一次回调
 	{
-		TimerCount++;//?????? ?????????
-		if(TimerCount %5 == 0)//?10ms ????
+		TimerCount++;// 累加定时器节拍
+		if(TimerCount %5 == 0)// 每 10ms 计算一次编码器速度
 		{
-			Encode1Count = -(short)__HAL_TIM_GET_COUNTER(&htim4);//????????????? (short):????? -:?????????
+			Encode1Count = -(short)__HAL_TIM_GET_COUNTER(&htim4);// 读取电机1编码器计数，负号用于匹配安装方向
 			Encode2Count = (short)__HAL_TIM_GET_COUNTER(&htim2);
-			__HAL_TIM_SET_COUNTER(&htim4,0);//???????????????????????????
+			__HAL_TIM_SET_COUNTER(&htim4,0);// 清零编码器计数，准备下一周期测速
 			__HAL_TIM_SET_COUNTER(&htim2,0);
 		
-			/* ?????? = ??????*???????/???/?????/4?? */
+			/* 速度换算：编码器计数 * 控制周期系数 / 减速比 / 线数 / 4倍频 */
 			Motor1Speed = (float)Encode1Count*100/9.6/11/4;
 			Motor2Speed = (float)Encode2Count*100/9.6/11/4;
 		}
-		if(TimerCount %10 == 0)//?20ms????
+		if(TimerCount %10 == 0)// 每 20ms 执行一次电机速度闭环
 		{
-			/*?? += ??*????*??*/
+			/* 里程累计 */
 		   Mileage += 0.02*Motor1Speed*22;
-		   /*??????*/
+		   /* 电机速度 PID 闭环输出 */
 		   Motor_Set(PID_realize(&pidMotor1Speed,Motor1Speed),PID_realize(&pidMotor2Speed,Motor2Speed));
 		   TimerCount=0;
 		}
@@ -382,42 +380,23 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 }
 
 
-//????????
+/**
+* @brief  UART 接收完成回调函数
+* @note   USART3 仅保留备用接收；USART2 不再解析旧视觉数据，仅维持备用接收。
+* @param  huart: 触发接收完成回调的 UART 句柄
+* @return 无
+*/
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-	if( huart == &huart3)//?????
+	if( huart == &huart3)// 串口3旧遥控接收入口，当前只保留接收恢复
 	{
-		if(g_ucUsart3ReceiveData == 'A') motorPidSetSpeed(1,1);//???
-		if(g_ucUsart3ReceiveData == 'B') motorPidSetSpeed(-1,-1);//???
-		if(g_ucUsart3ReceiveData == 'C') motorPidSetSpeed(0,0);//??
-		if(g_ucUsart3ReceiveData == 'D') motorPidSetSpeed(1,2);//????	
-		if(g_ucUsart3ReceiveData == 'E') motorPidSetSpeed(2,1);//????
-		if(g_ucUsart3ReceiveData == 'F') motorPidSpeedUp();//??
-		if(g_ucUsart3ReceiveData == 'G') motorPidSpeedCut();//??
-		if(g_ucUsart3ReceiveData == 'H')//??90?
-		{				
-			if(pidMPU6050YawMovement.target_val <= 180)pidMPU6050YawMovement.target_val += 90;//???
-		}
-		if(g_ucUsart3ReceiveData == 'I')//??90?
-		{				
-			if(pidMPU6050YawMovement.target_val >= -180)pidMPU6050YawMovement.target_val -= 90;//???
-        }	
-		if(g_ucUsart3ReceiveData == 'J') //????
-		{
-			if(g_ucMode >= 7) g_ucMode = 1;// Mode 7 is dual-STM32 auto grab
-			else
-			{
-				g_ucMode+=1;
-			}
-		}
-		if(g_ucUsart3ReceiveData == 'K') g_ucMode=0;//???????
-		HAL_UART_Receive_IT( &huart3,&g_ucUsart3ReceiveData, 1);//????????
+		// 当前底盘固定为树莓派控制模式，USART3 不再接收旧遥控/模式切换命令。
+		HAL_UART_Receive_IT( &huart3,&g_ucUsart3ReceiveData, 1);// 继续开启串口3单字节接收
 	}
-	if(huart == &huart2)//????? ???????
+	if(huart == &huart2)// 串口2备用接收入口
 	{
-		//????????	
-		usartCamera_Receive_Data(g_ucUsart2ReceiveData);
-		HAL_UART_Receive_IT(&huart2,&g_ucUsart2ReceiveData,1);  //?????????
+		// USART2 原来用于旧视觉模块，现在只保留为备用串口。
+		HAL_UART_Receive_IT(&huart2,&g_ucUsart2ReceiveData,1);  // 继续开启串口2单字节接收
 	}
 }
 

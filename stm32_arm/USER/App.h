@@ -4,7 +4,6 @@
 
 #define LED 		PBout(9)
 #define BUZZER 		PCout(13)
-#define KEY 		PCin(0)
 
 #define LED_ON		0
 #define LED_OFF		1
@@ -18,14 +17,14 @@ void DelayUs(u32 nus);
 
 void InitADC(void);
 void InitTimer2(void);
-void InitUart2(void);
 void InitLED(void);
-void InitKey(void);
 void InitBuzzer(void);
 void Uart1SendData(BYTE dat);
 uint16 GetBatteryVoltage(void);
 
 
-void TaskRun(u8 ps2_ok);
+void TaskRun(void);
 
 #endif
+
+

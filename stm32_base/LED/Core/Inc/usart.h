@@ -39,7 +39,6 @@ extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN Private defines */
-uint8_t Usart_WaitReasFinish(void);
 /* USER CODE END Private defines */
 
 void MX_USART1_UART_Init(void);
@@ -47,8 +46,8 @@ void MX_USART2_UART_Init(void);
 void MX_USART3_UART_Init(void);
 
 /* USER CODE BEGIN Prototypes */
-void usartCamera_Receive_Data(uint8_t data);
-uint8_t usartCamera_HasRecentFrame(uint32_t timeout_ms);
+void BaseCmd_ReceiveByte(uint8_t data);
+void BaseCmd_Task(void);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

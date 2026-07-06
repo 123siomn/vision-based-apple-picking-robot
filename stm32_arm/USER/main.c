@@ -1,36 +1,25 @@
-
 #include "include.h"
 
-
-
+/*
+ * 函数功能：机械臂主程序入口
+ * 说明：当前工程固定为树莓派通过 USART1 控制 PWM 舵机，不再初始化 PS2 手柄、蓝牙、总线舵机、按键动作组和 Flash 动作组。
+ */
 int main(void)
 {
-	uint8 ps_ok = 1;
-	SystemInit(); 			 //系统时钟初始化为72M	  SYSCLK_FREQ_72MHz
+	SystemInit(); 			 //系统时钟初始化为72M
 	InitDelay(72);	     //延时初始化
-	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);	//设置NVIC中断分组2:2位抢占优先级，2位响应优先级
-	InitPWM();
-	InitTimer2();//用于产生100us的定时中断
-	InitUart1();//用于与PC端进行通信
-	InitUart3();//外接模块的串口
+	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
+	InitPWM();           //初始化普通 PWM 舵机输出
+	InitTimer2();        //用于产生100us的定时中断
+	InitUart1();         //USART1 用于与树莓派通信
 	InitADC();
 	InitLED();
-	InitKey();
 	InitBuzzer();
-	ps_ok = InitPS2();//PS2游戏手柄接收器初始化
-	InitFlash();
-	InitMemory();
-	InitBusServoCtrl();
 	LED = LED_ON;
-	BusServoCtrl(1,SERVO_MOVE_TIME_WRITE,500,1000);
-	BusServoCtrl(2,SERVO_MOVE_TIME_WRITE,500,1000);
-	BusServoCtrl(3,SERVO_MOVE_TIME_WRITE,500,1000);
-	BusServoCtrl(4,SERVO_MOVE_TIME_WRITE,500,1000);
-	BusServoCtrl(5,SERVO_MOVE_TIME_WRITE,500,1000);
-	BusServoCtrl(6,SERVO_MOVE_TIME_WRITE,500,1000);
+	ArmControl_SetHome(1000);//上电后让 PWM 舵机回到中位，等待树莓派命令
 	while(1)
 	{
-		TaskRun(ps_ok);
+		TaskRun();
 	}
 }
 

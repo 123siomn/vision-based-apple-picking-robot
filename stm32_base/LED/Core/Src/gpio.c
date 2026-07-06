@@ -22,7 +22,6 @@
 #include "gpio.h"
 
 /* USER CODE BEGIN 0 */
-extern uint8_t g_ucMode ; //小车运动模式标志位
 /* USER CODE END 0 */
 
 /*----------------------------------------------------------------------------*/
@@ -120,32 +119,19 @@ void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 2 */
+/**
+* @brief  GPIO 外部中断回调函数
+* @note   当前底盘固定为树莓派控制模式，KEY1/KEY2 不再用于切换旧演示模式。
+* @param  GPIO_Pin: 触发外部中断的 GPIO 引脚
+* @return 无
+*/
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-	if(GPIO_Pin == KEY1_Pin) //判断一下那个引脚触发中断
+	if((GPIO_Pin == KEY1_Pin) || (GPIO_Pin == KEY2_Pin))
 	{
-		/*注意现在是在外部中断 要调用HAL_Delay，会使用Systick定时器中断 所以Systick优先级要高于外部中断*/
-		HAL_Delay(10);//延时消抖 
-		if(HAL_GPIO_ReadPin(KEY1_GPIO_Port, KEY1_Pin) == GPIO_PIN_SET)//判断KEY1引脚仍为高电平
-		{
-			//这里编写触发中断后要执行的程序
-			if(g_ucMode == 6) g_ucMode = 1;//g_ucMode模式是0 1 2 3 4 5  6
-			else
-			{
-				g_ucMode+=1;
-			}
-			HAL_GPIO_TogglePin(LED_GPIO_Port,LED_Pin);//反转小灯
-		}
-	}
-	if(GPIO_Pin == KEY2_Pin) //判断一下那个引脚触发中断
-	{
-		HAL_Delay(10);//延时消抖
-		if(HAL_GPIO_ReadPin(KEY2_GPIO_Port, KEY2_Pin) == GPIO_PIN_RESET)//判断KEY1引脚仍为低电平
-		{
-			//这里编写触发中断后要执行的程序
-			g_ucMode=0;
-			HAL_GPIO_TogglePin(LED_GPIO_Port,LED_Pin);//反转小灯
-		}
+		// 保留按键中断入口和 LED 提示，但不再修改 g_ucMode，避免误切到旧模式。
+		HAL_Delay(10);
+		HAL_GPIO_TogglePin(LED_GPIO_Port,LED_Pin);
 	}
 }
 

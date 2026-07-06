@@ -546,29 +546,14 @@
               <FilePath>.\USER\App.c</FilePath>
             </File>
             <File>
-              <FileName>RobotRun.c</FileName>
+              <FileName>ArmControl.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\USER\RobotRun.c</FilePath>
+              <FilePath>.\USER\ArmControl.c</FilePath>
             </File>
             <File>
-              <FileName>Flash.c</FileName>
+              <FileName>ArmProtocol.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\USER\Flash.c</FilePath>
-            </File>
-            <File>
-              <FileName>PS2GamePad.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\USER\PS2GamePad.c</FilePath>
-            </File>
-            <File>
-              <FileName>Bluetooth.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\USER\Bluetooth.c</FilePath>
-            </File>
-            <File>
-              <FileName>BusServoCtrl.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\USER\BusServoCtrl.c</FilePath>
+              <FilePath>.\USER\ArmProtocol.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -593,3 +578,4 @@
   </RTE>
 
 </Project>
+

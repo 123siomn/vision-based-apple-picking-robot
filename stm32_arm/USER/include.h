@@ -86,12 +86,10 @@ typedef unsigned short	string;
 // #include "intrins.h"
 #include "App.h"
 #include "PWM.h"
-#include "BusServoCtrl.h"
-#include "PS2GamePad.h"
 #include "PCMsg.h"
-#include "Flash.h"
-#include "RobotRun.h"
-#include "Bluetooth.h"
+#include "ArmControl.h"
+#include "ArmProtocol.h"
 
 #endif
+
 
