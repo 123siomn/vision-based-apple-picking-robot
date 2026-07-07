@@ -30,11 +30,8 @@
 ".\obj\system_stm32f10x.o"
 ".\obj\pcmsg.o"
 ".\obj\app.o"
-".\obj\robotrun.o"
-".\obj\flash.o"
-".\obj\ps2gamepad.o"
-".\obj\bluetooth.o"
-".\obj\busservoctrl.o"
+".\obj\armcontrol.o"
+".\obj\armprotocol.o"
 --strict --scatter ".\Obj\OpenArmSTM32.sct"
 --summary_stderr --info summarysizes --map --load_addr_map_info --xref --callgraph --symbols
 --info sizes --info totals --info unused --info veneers
