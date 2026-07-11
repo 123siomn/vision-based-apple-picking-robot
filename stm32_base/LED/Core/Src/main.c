@@ -1,38 +1,14 @@
 /* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2022 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
-/**
-  ******************************************************************************
-  * 作者: 小车俱乐部 VCC
-  * 联系方式: 1930299709@qq.com
-  * 程序版本: V3.3.0
-  * 硬件资料版本: V3.3.0
-  *
-  ******************************************************************************
-  * 功能说明:
-  * 本文件为底盘主控入口，当前固定为树莓派 USART1 控制模式。
-  * 旧多模式演示、OpenMV/K210 视觉、cJSON 调参和底盘直连机械臂逻辑已清理。
-  * 底盘保留电机 PID、编码器、循迹、超声波、MPU6050 等底层能力。
-  ******************************************************************************
-  */
+/*
+ * 文件功能：底盘 STM32 主程序入口。
+ * 当前运行逻辑：初始化底盘外设，启动电机 PWM、编码器、USART1 接收、PID 和 MPU6050，
+ * 主循环周期处理树莓派底盘命令与底盘控制任务。
+ */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "adc.h"
+#include "dma.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -62,7 +38,7 @@ uint8_t OledString[50];          // OLED 显示字符串缓冲区
 uint8_t g_ucUsart3ReceiveData;   // USART3 单字节接收缓存，当前保留备用
 uint8_t g_ucUsart2ReceiveData;   // USART2 单字节接收缓存，当前保留备用
 uint8_t g_ucUsart1ReceiveData;   // USART1 接收树莓派命令的单字节缓存
-uint8_t g_ucMode = 0;            // 固定为树莓派控制模式，不再通过按键切换旧模式
+uint8_t g_ucMode = 0;            // 树莓派控制模式标志
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -81,8 +57,8 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN 0 */
 
 /**
-* @brief  当前底盘主控只保留树莓派串口控制模式
-* @note   底盘只负责执行 USART1 收到的上层控制命令，机械臂由树莓派单独控制。
+* @brief  底盘主控运行说明
+* @note   底盘通过 USART1 接收树莓派命令，并在主循环中执行底盘控制任务。
 */
 
 /* USER CODE END 0 */
@@ -93,6 +69,7 @@ void SystemClock_Config(void);
   */
 int main(void)
 {
+
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
@@ -115,6 +92,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();

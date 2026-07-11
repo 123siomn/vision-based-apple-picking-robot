@@ -1,6 +1,4 @@
 #include "include.h"
-//作者:深圳市乐幻索尔科技有限公司
-//我们的店铺:lobot-zone.taobao.com
 
 
 
@@ -293,7 +291,7 @@ void TaskTimeHandle(void)
 
 /*
  * 函数功能：机械臂主循环任务
- * 说明：保留系统计时、USART1 树莓派协议和 PWM 舵机控制；不再处理按键触发和 Flash 动作组。
+ * 说明：处理系统计时、USART1 树莓派协议和 PWM 舵机控制任务。
  */
 void TaskRun(void)
 {

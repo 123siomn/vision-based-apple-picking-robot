@@ -1,20 +1,7 @@
 /* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file    stm32f1xx_it.c
-  * @brief   Interrupt Service Routines.
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2022 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
+/*
+ * 文件功能：底盘工程中断服务函数。
+ */
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
@@ -82,6 +69,7 @@ float Mileage;// 底盘累计里程，单位 cm
 extern TIM_HandleTypeDef htim1;
 extern TIM_HandleTypeDef htim2;
 extern TIM_HandleTypeDef htim4;
+extern DMA_HandleTypeDef hdma_usart1_rx;
 extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart3;
@@ -242,6 +230,20 @@ void EXTI4_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles DMA1 channel5 global interrupt.
+  */
+void DMA1_Channel5_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA1_Channel5_IRQn 0 */
+
+  /* USER CODE END DMA1_Channel5_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_usart1_rx);
+  /* USER CODE BEGIN DMA1_Channel5_IRQn 1 */
+
+  /* USER CODE END DMA1_Channel5_IRQn 1 */
+}
+
+/**
   * @brief This function handles TIM1 update interrupt.
   */
 void TIM1_UP_IRQHandler(void)
@@ -284,7 +286,7 @@ void TIM4_IRQHandler(void)
 }
 
 /**
-  * @brief 处理 USART1 全局中断，当前用于接收树莓派下发到底盘的命令字节。
+  * @brief This function handles USART1 global interrupt.
   */
 void USART1_IRQHandler(void)
 {
@@ -304,7 +306,7 @@ void USART1_IRQHandler(void)
 }
 
 /**
-  * @brief 处理 USART2 全局中断，当前旧视觉解析已删除，串口暂作备用。
+  * @brief This function handles USART2 global interrupt.
   */
 void USART2_IRQHandler(void)
 {
@@ -382,20 +384,20 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 /**
 * @brief  UART 接收完成回调函数
-* @note   USART3 仅保留备用接收；USART2 不再解析旧视觉数据，仅维持备用接收。
+* @note   USART2/USART3 当前作为备用串口，接收完成后重新开启单字节接收。
 * @param  huart: 触发接收完成回调的 UART 句柄
 * @return 无
 */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-	if( huart == &huart3)// 串口3旧遥控接收入口，当前只保留接收恢复
+	if( huart == &huart3)// USART3 备用接收入口
 	{
-		// 当前底盘固定为树莓派控制模式，USART3 不再接收旧遥控/模式切换命令。
+		// USART3 当前只恢复下一次单字节接收。
 		HAL_UART_Receive_IT( &huart3,&g_ucUsart3ReceiveData, 1);// 继续开启串口3单字节接收
 	}
-	if(huart == &huart2)// 串口2备用接收入口
+	if(huart == &huart2)// USART2 备用接收入口
 	{
-		// USART2 原来用于旧视觉模块，现在只保留为备用串口。
+		// USART2 当前只恢复下一次单字节接收。
 		HAL_UART_Receive_IT(&huart2,&g_ucUsart2ReceiveData,1);  // 继续开启串口2单字节接收
 	}
 }
@@ -404,5 +406,3 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 
 /* USER CODE END 1 */
-
-

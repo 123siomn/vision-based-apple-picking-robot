@@ -2,19 +2,6 @@
 #define __MPUIIC_H
 #include "main.h"
 
-//////////////////////////////////////////////////////////////////////////////////	 
-//本程序只供学习使用，未经作者许可，不得用于其它任何用途
-//ALIENTEK战舰STM32开发板V3
-//MPU6050 IIC驱动 代码	   
-//正点原子@ALIENTEK
-//技术论坛:www.openedv.com
-//创建日期:2015/1/17
-//版本：V1.0
-//版权所有，盗版必究。
-//Copyright(C) 广州市星翼电子科技有限公司 2009-2019
-//All rights reserved									  
-//////////////////////////////////////////////////////////////////////////////////
- 	   		   
 //IO方向设置 设置SDA-PB9为输入或者输出
 #define MPU_SDA_IN()  {GPIOB->CRH&=0XFFFFFF0F;GPIOB->CRH|=8<<4;}
 #define MPU_SDA_OUT() {GPIOB->CRH&=0XFFFFFF0F;GPIOB->CRH|=3<<4;}
@@ -49,19 +36,3 @@ void MPU_IIC_NAck(void);				//IIC不发送ACK信号
 void IMPU_IC_Write_One_Byte(uint8_t daddr,uint8_t addr,uint8_t data);
 uint8_t MPU_IIC_Read_One_Byte(uint8_t daddr,uint8_t addr);	  
 #endif
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

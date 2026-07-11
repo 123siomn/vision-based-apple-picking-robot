@@ -52,7 +52,7 @@ void Uart1SendData(BYTE dat)
 
 /*
  * 函数功能：USART1 接收中断服务函数
- * 说明：只接收树莓派文本协议字节，不再兼容旧 PC 上位机二进制协议。
+ * 说明：接收树莓派文本协议字节，并交给 ArmProtocol_ReceiveByte() 缓存。
  */
 void USART1_IRQHandler(void)
 {

@@ -1,21 +1,7 @@
 /* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file    gpio.c
-  * @brief   This file provides code for the configuration
-  *          of all used GPIO pins.
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2022 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
+/*
+ * 文件功能：GPIO 初始化与按键外部中断回调。
+ */
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
@@ -121,7 +107,7 @@ void MX_GPIO_Init(void)
 /* USER CODE BEGIN 2 */
 /**
 * @brief  GPIO 外部中断回调函数
-* @note   当前底盘固定为树莓派控制模式，KEY1/KEY2 不再用于切换旧演示模式。
+* @note   KEY1/KEY2 当前只保留按键输入检测和 LED 提示。
 * @param  GPIO_Pin: 触发外部中断的 GPIO 引脚
 * @return 无
 */
@@ -129,7 +115,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
 	if((GPIO_Pin == KEY1_Pin) || (GPIO_Pin == KEY2_Pin))
 	{
-		// 保留按键中断入口和 LED 提示，但不再修改 g_ucMode，避免误切到旧模式。
+		// 按键触发时只翻转 LED，用于确认按键中断正常。
 		HAL_Delay(10);
 		HAL_GPIO_TogglePin(LED_GPIO_Port,LED_Pin);
 	}

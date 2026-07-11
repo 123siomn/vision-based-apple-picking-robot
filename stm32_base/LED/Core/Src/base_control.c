@@ -164,7 +164,7 @@ void BaseControl_SetWheelSpeed(float leftSpeed, float rightSpeed)
 
 /**
 * @brief  设置底盘控制状态
-* @note   当前用于预留循迹、避障等状态入口。切到 STOP 时会立即停车。
+* @note   切到 STOP 或 IDLE 时都会清零电机目标速度，避免底盘保留旧速度。
 * @param  state: 目标底盘控制状态
 * @return 无
 */
@@ -174,6 +174,13 @@ void BaseControl_SetState(BaseControl_State_t state)
 	if(state == BASE_STATE_STOP)
 	{
 		BaseControl_Stop();
+		return;
+	}
+	if(state == BASE_STATE_IDLE)
+	{
+		g_fBaseTargetLeftSpeed = 0.0f;
+		g_fBaseTargetRightSpeed = 0.0f;
+		motorPidSetSpeed(0.0f, 0.0f);
 	}
 }
 

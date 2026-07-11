@@ -21,7 +21,7 @@ static uint16 ArmControl_LimitTime(uint16 time)
 
 /*
  * 函数功能：停止机械臂当前控制任务
- * 说明：当前版本不再运行 Flash 动作组；停止命令只更新控制状态，不关闭 TIM3 PWM 输出，避免舵机失去保持力。
+ * 说明：停止命令只更新控制状态，不关闭 TIM3 PWM 输出，避免舵机失去保持力。
  */
 void ArmControl_Stop(void)
 {

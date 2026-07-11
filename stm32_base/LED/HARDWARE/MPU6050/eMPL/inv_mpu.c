@@ -1,6 +1,5 @@
 /*
  $License:
-    Copyright (C) 2011-2012 InvenSense Corporation, All Rights Reserved.
     See included License.txt for License information.
  $
  */
@@ -2854,16 +2853,7 @@ lp_int_restore:
 //////////////////////////////////////////////////////////////////////////////////
 //添加的代码部分 
 //////////////////////////////////////////////////////////////////////////////////	 
-//本程序只供学习使用，未经作者许可，不得用于其它任何用途
-//ALIENTEK精英STM32开发板V3
 //MPU6050 DMP 驱动代码	   
-//正点原子@ALIENTEK
-//技术论坛:www.openedv.com
-//创建日期:2015/1/17
-//版本：V1.0
-//版权所有，盗版必究。
-//Copyright(C) 广州市星翼电子科技有限公司 2009-2019
-//All rights reserved									  
 ////////////////////////////////////////////////////////////////////////////////// 
 
 //q30格式,long转float时的除数.
@@ -3018,25 +3008,3 @@ uint8_t mpu_dmp_get_data(float *pitch,float *roll,float *yaw)
 	}else return 2;
 	return 0;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
