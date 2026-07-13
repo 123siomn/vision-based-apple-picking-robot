@@ -26,7 +26,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "motor.h"
-#include "pid.h"
 #include "base_control.h"
 #include "mpu6050.h"
 /* USER CODE END Includes */
@@ -92,7 +91,6 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_ADC1_Init();
   MX_ADC2_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
@@ -103,14 +101,13 @@ int main(void)
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);       /* 启动电机 2 PWM 输出 */
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL); /* 启动编码器 2 计数 */
   HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL); /* 启动编码器 1 计数 */
-  HAL_TIM_Base_Start_IT(&htim1);                  /* 启动 TIM1 周期中断，用于速度计算和 PID 闭环 */
 
-  PID_init();
   BaseControl_Stop();                             /* 上电默认停车，等待树莓派 USART1 命令 */
   BaseCmd_StartReceive();                         /* 开启 USART1 单字节中断接收 */
 
   HAL_Delay(500);                                 /* 等待 MPU6050 上电稳定 */
   (void)MPU_Init();
+
 
   /* USER CODE END 2 */
 

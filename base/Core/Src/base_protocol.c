@@ -5,13 +5,14 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define BASE_PROTOCOL_RESPONSE_SIZE 96
+#define BASE_PROTOCOL_RESPONSE_SIZE 128
 #define BASE_PROTOCOL_TARGET "BASE"
 #define BASE_PROTOCOL_DEFAULT_SEQ "000"
 
-/*
- * 函数功能：计算数据帧 payload 的 8 位累加和
- * 说明：校验范围只包含 $ 之后、* 之前的 ASCII 字符，逗号也参与计算。
+/**
+ * @brief  计算协议 payload 的 8 位累加和。
+ * @param  payload: 位于 '$' 和 '*' 之间的字符串
+ * @return 8 位累加校验值
  */
 static uint8_t BaseProtocol_CalcChecksum(const char *payload)
 {
@@ -26,8 +27,10 @@ static uint8_t BaseProtocol_CalcChecksum(const char *payload)
 	return checksum;
 }
 
-/*
- * 函数功能：把 0~15 的数值转换成一个大写十六进制字符
+/**
+ * @brief  将 4 位数值转换为大写十六进制字符。
+ * @param  value: 输入数值，仅使用低 4 位
+ * @return ASCII 十六进制字符
  */
 static char BaseProtocol_HexToChar(uint8_t value)
 {
@@ -39,9 +42,11 @@ static char BaseProtocol_HexToChar(uint8_t value)
 	return (char)('A' + value - 10u);
 }
 
-/*
- * 函数功能：把一个十六进制字符转换成 0~15 的数值
- * 返回值：1 表示转换成功，0 表示字符非法。
+/**
+ * @brief  将一个 ASCII 十六进制字符转换为 4 位数值。
+ * @param  ch: ASCII 十六进制字符
+ * @param  value: 输出转换后的数值
+ * @return 1 表示转换成功，0 表示字符非法
  */
 static uint8_t BaseProtocol_CharToHex(char ch, uint8_t *value)
 {
@@ -63,9 +68,11 @@ static uint8_t BaseProtocol_CharToHex(char ch, uint8_t *value)
 	return 0u;
 }
 
-/*
- * 函数功能：解析两位 ASCII 十六进制校验码
- * 返回值：1 表示解析成功，0 表示校验码格式错误。
+/**
+ * @brief  解析两位 ASCII 十六进制校验码。
+ * @param  text: 以 '\0' 结尾的校验码字符串
+ * @param  checksum: 输出解析后的校验值
+ * @return 1 表示解析成功，0 表示格式错误
  */
 static uint8_t BaseProtocol_ParseChecksum(const char *text, uint8_t *checksum)
 {
@@ -89,9 +96,12 @@ static uint8_t BaseProtocol_ParseChecksum(const char *text, uint8_t *checksum)
 	return 1u;
 }
 
-/*
- * 函数功能：通过 USART1 发送标准协议数据帧
- * 帧格式：$BASE,SEQ,TYPE,DETAIL*CS\r\n
+/**
+ * @brief  通过 USART1 发送一帧标准底盘应答。
+ * @param  seq: 请求帧中的序号
+ * @param  type: 应答类型，例如 ACK、ERR 或 STATUS
+ * @param  detail: 应答详情字符串
+ * @return None
  */
 static void BaseProtocol_SendFrame(const char *seq, const char *type, const char *detail)
 {
@@ -118,26 +128,32 @@ static void BaseProtocol_SendFrame(const char *seq, const char *type, const char
 	(void)HAL_UART_Transmit(&huart1, (uint8_t *)frame, (uint16_t)strlen(frame), 100u);
 }
 
-/*
- * 函数功能：发送 ACK 应答帧
- * 说明：ACK 表示命令格式正确，并且已经交给底盘控制层执行。
+/**
+ * @brief  发送命令接收成功应答。
+ * @param  seq: 请求帧中的序号
+ * @param  cmd: 已接收的命令名
+ * @return None
  */
 static void BaseProtocol_SendAck(const char *seq, const char *cmd)
 {
 	BaseProtocol_SendFrame(seq, "ACK", cmd);
 }
 
-/*
- * 函数功能：发送 ERR 应答帧
- * 说明：ERR 表示协议、目标、命令或参数错误。
+/**
+ * @brief  发送命令错误应答。
+ * @param  seq: 请求帧中的序号，无法获取时使用默认序号
+ * @param  reason: 错误原因
+ * @return None
  */
 static void BaseProtocol_SendErr(const char *seq, const char *reason)
 {
 	BaseProtocol_SendFrame(seq, "ERR", reason);
 }
 
-/*
- * 函数功能：把底盘控制状态转换成状态字符串
+/**
+ * @brief  将底盘状态枚举转换为状态字符串。
+ * @param  None
+ * @return 状态字符串
  */
 static const char *BaseProtocol_GetStateText(void)
 {
@@ -158,9 +174,10 @@ static const char *BaseProtocol_GetStateText(void)
 	}
 }
 
-/*
- * 函数功能：发送底盘状态帧
- * 说明：当前先返回状态和超声波安全开关，距离和障碍事件后续再扩展。
+/**
+ * @brief  发送底盘状态应答。
+ * @param  seq: 请求帧中的序号
+ * @return None
  */
 static void BaseProtocol_SendStatus(const char *seq)
 {
@@ -172,9 +189,12 @@ static void BaseProtocol_SendStatus(const char *seq)
 	BaseProtocol_SendFrame(seq, "STATUS", detail);
 }
 
-/*
- * 函数功能：执行 MOVE 命令
- * 支持格式：$BASE,SEQ,MOVE,left,right*CS
+/**
+ * @brief  执行 MOVE 命令，协议格式保持树莓派原格式不变。
+ * @param  seq: 请求帧中的序号
+ * @param  leftText: 左轮数值字符串，范围 -5.0~5.0
+ * @param  rightText: 右轮数值字符串，范围 -5.0~5.0
+ * @return None
  */
 static void BaseProtocol_HandleMove(const char *seq, char *leftText, char *rightText)
 {
@@ -196,13 +216,15 @@ static void BaseProtocol_HandleMove(const char *seq, char *leftText, char *right
 		return;
 	}
 
-	BaseControl_SetWheelSpeed(leftSpeed, rightSpeed);
+	BaseControl_SetWheelOpenLoop(leftSpeed, rightSpeed);
 	BaseProtocol_SendAck(seq, "MOVE");
 }
 
-/*
- * 函数功能：执行 SAFE 命令
- * 支持格式：$BASE,SEQ,SAFE,ON*CS 或 $BASE,SEQ,SAFE,OFF*CS
+/**
+ * @brief  执行 SAFE 命令。
+ * @param  seq: 请求帧中的序号
+ * @param  switchText: ON 或 OFF
+ * @return None
  */
 static void BaseProtocol_HandleSafe(const char *seq, char *switchText)
 {
@@ -228,9 +250,11 @@ static void BaseProtocol_HandleSafe(const char *seq, char *switchText)
 	BaseProtocol_SendErr(seq, "PARAM");
 }
 
-/*
- * 函数功能：执行 TRACK 命令
- * 支持格式：$BASE,SEQ,TRACK,ON*CS 或 $BASE,SEQ,TRACK,OFF*CS
+/**
+ * @brief  执行 TRACK 命令。
+ * @param  seq: 请求帧中的序号
+ * @param  switchText: ON 或 OFF
+ * @return None
  */
 static void BaseProtocol_HandleTrack(const char *seq, char *switchText)
 {
@@ -256,10 +280,11 @@ static void BaseProtocol_HandleTrack(const char *seq, char *switchText)
 	BaseProtocol_SendErr(seq, "PARAM");
 }
 
-/*
- * 函数功能：执行 AVOID 命令
- * 支持格式：$BASE,SEQ,AVOID,ON*CS
- * 说明：当前只进入预留避障状态，具体避障动作后续再实现。
+/**
+ * @brief  执行 AVOID 命令占位逻辑。
+ * @param  seq: 请求帧中的序号
+ * @param  switchText: ON 表示进入预留避障状态
+ * @return None
  */
 static void BaseProtocol_HandleAvoid(const char *seq, char *switchText)
 {
@@ -273,9 +298,10 @@ static void BaseProtocol_HandleAvoid(const char *seq, char *switchText)
 	BaseProtocol_SendErr(seq, "PARAM");
 }
 
-/*
- * 函数功能：解析并执行一帧底盘新协议命令
- * 支持命令：STOP、IDLE、MOVE、SAFE、TRACK、AVOID、STATUS。
+/**
+ * @brief  解析并执行一帧标准底盘命令。
+ * @param  line: 可修改的帧缓存
+ * @return None
  */
 static void BaseProtocol_HandleFrame(char *line)
 {
@@ -344,38 +370,32 @@ static void BaseProtocol_HandleFrame(char *line)
 		BaseProtocol_SendAck(seq, "STOP");
 		return;
 	}
-
 	if(strcmp(cmd, "IDLE") == 0)
 	{
 		BaseControl_SetState(BASE_STATE_IDLE);
 		BaseProtocol_SendAck(seq, "IDLE");
 		return;
 	}
-
 	if(strcmp(cmd, "MOVE") == 0)
 	{
 		BaseProtocol_HandleMove(seq, arg1, arg2);
 		return;
 	}
-
 	if(strcmp(cmd, "SAFE") == 0)
 	{
 		BaseProtocol_HandleSafe(seq, arg1);
 		return;
 	}
-
 	if(strcmp(cmd, "TRACK") == 0)
 	{
 		BaseProtocol_HandleTrack(seq, arg1);
 		return;
 	}
-
 	if(strcmp(cmd, "AVOID") == 0)
 	{
 		BaseProtocol_HandleAvoid(seq, arg1);
 		return;
 	}
-
 	if(strcmp(cmd, "STATUS") == 0)
 	{
 		BaseProtocol_SendStatus(seq);
@@ -385,9 +405,10 @@ static void BaseProtocol_HandleFrame(char *line)
 	BaseProtocol_SendErr(seq, "CMD");
 }
 
-/*
- * 函数功能：处理树莓派发来的单行底盘数据帧
- * 说明：USART1 接收层只负责缓存一行，本函数负责协议校验、解析、执行和应答。
+/**
+ * @brief  处理 USART1 接收层交付的一行完整底盘命令。
+ * @param  line: 以 '\0' 结尾的命令行字符串
+ * @return None
  */
 void BaseProtocol_HandleLine(const char *line)
 {
