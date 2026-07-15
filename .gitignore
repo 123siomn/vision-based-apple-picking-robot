@@ -32,3 +32,8 @@ Thumbs.db
 *.key
 *.pem
 config_secret.py
+# Raspberry Pi runtime files
+raspberrypi/**/*.log
+raspberrypi/depth_helper/depth_xyz_reader
+raspberrypi/depth_helper/build/
+raspberrypi/.venv/
