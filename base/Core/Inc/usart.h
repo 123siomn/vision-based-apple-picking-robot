@@ -44,6 +44,8 @@ void MX_USART1_UART_Init(void);
 void BaseCmd_StartReceive(void);
 void BaseCmd_ReceiveByte(uint8_t data);
 void BaseCmd_Task(void);
+uint32_t BaseCmd_GetRxByteCount(void);
+uint32_t BaseCmd_GetRxLineCount(void);
 
 /* USER CODE END Prototypes */
 
@@ -52,4 +54,3 @@ void BaseCmd_Task(void);
 #endif
 
 #endif /* __USART_H__ */
-

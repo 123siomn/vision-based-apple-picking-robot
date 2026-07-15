@@ -1,5 +1,6 @@
 #include "base_protocol.h"
 #include "base_control.h"
+#include "adc.h"
 #include "usart.h"
 #include <stdio.h>
 #include <string.h>
@@ -182,10 +183,22 @@ static const char *BaseProtocol_GetStateText(void)
 static void BaseProtocol_SendStatus(const char *seq)
 {
 	char detail[BASE_PROTOCOL_RESPONSE_SIZE];
+	int32_t batteryMv;
 
-	(void)sprintf(detail, "STATE=%s,SAFE=%s",
-		BaseProtocol_GetStateText(),
-		(BaseControl_GetSafetyEnable() != 0u) ? "ON" : "OFF");
+	batteryMv = BaseAdc_ReadBatteryVoltageMv();
+	if(batteryMv < 0)
+	{
+		(void)sprintf(detail, "STATE=%s,SAFE=%s,VBAT=ERR",
+			BaseProtocol_GetStateText(),
+			(BaseControl_GetSafetyEnable() != 0u) ? "ON" : "OFF");
+	}
+	else
+	{
+		(void)sprintf(detail, "STATE=%s,SAFE=%s,VBAT=%ldmV",
+			BaseProtocol_GetStateText(),
+			(BaseControl_GetSafetyEnable() != 0u) ? "ON" : "OFF",
+			(long)batteryMv);
+	}
 	BaseProtocol_SendFrame(seq, "STATUS", detail);
 }
 

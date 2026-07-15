@@ -4,7 +4,7 @@
 #include <stdlib.h>
 
 #define ARM_PROTOCOL_LINE_SIZE 64
-#define ARM_PROTOCOL_RESPONSE_SIZE 64
+#define ARM_PROTOCOL_RESPONSE_SIZE 96
 #define ARM_PROTOCOL_TARGET "ARM"
 #define ARM_PROTOCOL_DEFAULT_SEQ "000"
 
@@ -276,11 +276,14 @@ static const char *ArmProtocol_GetStateText(void)
 
 /*
  * 函数功能：执行 STATUS 查询命令
- * 支持格式：$ARM,SEQ,STATUS*CS
+ * 说明：保持原有 $ARM,SEQ,STATUS*CS 查询格式不变，在 STATUS 详情中增加机械臂电池电压。
  */
 static void ArmProtocol_HandleStatus(const char *seq)
 {
-	ArmProtocol_SendFrame(seq, "STATUS", ArmProtocol_GetStateText());
+	char detail[ARM_PROTOCOL_RESPONSE_SIZE];
+
+	(void)sprintf(detail, "STATE=%s,VBAT=%umV", ArmProtocol_GetStateText(), GetBatteryVoltage());
+	ArmProtocol_SendFrame(seq, "STATUS", detail);
 }
 
 /*

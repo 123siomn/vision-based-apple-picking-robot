@@ -18,4 +18,6 @@ float P_realize(tPid * pid,float actual_val);
 void PID_init(void);
 float PI_realize(tPid * pid,float actual_val);
 float PID_realize(tPid * pid,float actual_val);
+float PID_realize_limit(tPid *pid, float actual_val, float output_limit, float err_sum_limit);
+void PID_Reset(tPid *pid);
 #endif

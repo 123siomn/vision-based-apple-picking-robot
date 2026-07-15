@@ -30,6 +30,9 @@ static uint8_t g_ucaBaseCmdRxBuffer[BASE_CMD_RX_BUFFER_SIZE];
 static uint8_t g_ucaBaseCmdLine[BASE_CMD_RX_BUFFER_SIZE];
 static uint8_t g_ucBaseCmdRxIndex = 0U;
 static volatile uint8_t g_ucBaseCmdLineReady = 0U;
+static volatile uint32_t g_ulBaseCmdRxByteCount = 0U;
+static volatile uint32_t g_ulBaseCmdRxLineCount = 0U;
+static uint8_t g_ucBaseCmdEscapePending = 0U;
 
 /* USER CODE END 0 */
 
@@ -128,8 +131,8 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
 
 /* USER CODE BEGIN 1 */
 /**
-  * @brief  开启底盘 USART1 单字节中断接收
-  * @note   树莓派通过 USART1 下发命令，接收完成后在 HAL_UART_RxCpltCallback() 中继续接收下一字节。
+  * @brief  开启底盘 USART1 单字节中断接收。
+  * @note   树莓派通过 USART1 下发正式协议帧，接收完成后在回调中继续接收下一字节。
   * @param  无
   * @retval 无
   */
@@ -139,14 +142,34 @@ void BaseCmd_StartReceive(void)
 }
 
 /**
-  * @brief  接收树莓派发来的单字节数据
-  * @note   本函数只拼接一行完整数据帧，不在中断上下文执行电机动作。
+  * @brief  接收 USART1 发来的单字节数据。
+  * @note   本函数只拼接一行完整数据帧，不在中断上下文执行底盘动作。
   * @param  data: USART1 收到的 1 个字节
   * @retval 无
   */
 void BaseCmd_ReceiveByte(uint8_t data)
 {
   uint8_t i;
+
+  g_ulBaseCmdRxByteCount++;
+
+  if(g_ucBaseCmdEscapePending != 0U)
+  {
+    g_ucBaseCmdEscapePending = 0U;
+    if((data == 'r') || (data == 'n'))
+    {
+      data = '\n';
+    }
+    else if(g_ucBaseCmdRxIndex < (BASE_CMD_RX_BUFFER_SIZE - 1U))
+    {
+      g_ucaBaseCmdRxBuffer[g_ucBaseCmdRxIndex++] = '\\';
+    }
+  }
+  else if(data == '\\')
+  {
+    g_ucBaseCmdEscapePending = 1U;
+    return;
+  }
 
   if((data == '\n') || (data == '\r'))
   {
@@ -155,13 +178,14 @@ void BaseCmd_ReceiveByte(uint8_t data)
       return;
     }
 
-    g_ucaBaseCmdRxBuffer[g_ucBaseCmdRxIndex] = '\0';
+    g_ucaBaseCmdRxBuffer[g_ucBaseCmdRxIndex] = 0U;
     for(i = 0U; i <= g_ucBaseCmdRxIndex; i++)
     {
       g_ucaBaseCmdLine[i] = g_ucaBaseCmdRxBuffer[i];
     }
     g_ucBaseCmdRxIndex = 0U;
     g_ucBaseCmdLineReady = 1U;
+    g_ulBaseCmdRxLineCount++;
     return;
   }
 
@@ -177,8 +201,8 @@ void BaseCmd_ReceiveByte(uint8_t data)
 }
 
 /**
-  * @brief  底盘命令处理任务
-  * @note   主循环周期调用；把 USART1 收到的完整行交给 base_protocol.c 解析执行。
+  * @brief  底盘命令处理任务。
+  * @note   主循环周期调用；完整行统一交给 base_protocol.c 按正式协议解析。
   * @param  无
   * @retval 无
   */
@@ -194,8 +218,8 @@ void BaseCmd_Task(void)
 }
 
 /**
-  * @brief  UART 接收完成回调函数
-  * @note   当前只使用 USART1 连接树莓派，收到 1 字节后立即恢复下一次接收。
+  * @brief  UART 接收完成回调函数。
+  * @note   当前使用 USART1 接收命令，收到 1 字节后立即恢复下一次接收。
   * @param  huart: 触发回调的 UART 句柄
   * @retval 无
   */
@@ -209,7 +233,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 }
 
 /**
-  * @brief  UART 错误回调函数
+  * @brief  UART 错误回调函数。
   * @note   USART1 出现溢出等错误时清除标志并恢复接收，避免通信链路卡死。
   * @param  huart: 发生错误的 UART 句柄
   * @retval 无
@@ -226,4 +250,23 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
   }
 }
 
+/**
+  * @brief  获取 USART1 已接收字节数。
+  * @param  无
+  * @retval 已接收字节数
+  */
+uint32_t BaseCmd_GetRxByteCount(void)
+{
+  return g_ulBaseCmdRxByteCount;
+}
+
+/**
+  * @brief  获取 USART1 已接收完整行数。
+  * @param  无
+  * @retval 已接收完整行数
+  */
+uint32_t BaseCmd_GetRxLineCount(void)
+{
+  return g_ulBaseCmdRxLineCount;
+}
 /* USER CODE END 1 */
