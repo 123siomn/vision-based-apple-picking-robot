@@ -14,6 +14,7 @@ RASPBERRYPI_DIR = Path(__file__).resolve().parents[1]
 DEPTH_EXE = RASPBERRYPI_DIR / "depth_helper" / "depth_xyz_reader"
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 RESULT_IMAGE_PATH = OUTPUT_DIR / "depth_offset_scan.jpg"
+MASK_IMAGE_PATH = OUTPUT_DIR / "depth_offset_mask.jpg"
 
 CAMERA_PATH = "/dev/video0"
 FRAME_WIDTH = 640
@@ -161,7 +162,7 @@ def build_red_mask(frame):
 
 
 def detect_largest_red_target(frame):
-    """选择面积最大的红色轮廓作为测试目标，返回目标框和 RGB 中心点。"""
+    """选择面积最大的红色轮廓作为测试目标，返回目标框、质心和 mask。"""
     mask = build_red_mask(frame)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -176,15 +177,26 @@ def detect_largest_red_target(frame):
             best_contour = contour
 
     if best_contour is None:
-        return None
+        return None, mask
 
     x, y, w, h = cv2.boundingRect(best_contour)
+    moments = cv2.moments(best_contour)
+    if moments["m00"] != 0:
+        # 用轮廓质心作为 RGB 目标中心，比外接矩形中心更不容易被过大的框带偏。
+        cx = int(moments["m10"] / moments["m00"])
+        cy = int(moments["m01"] / moments["m00"])
+    else:
+        cx = x + w // 2
+        cy = y + h // 2
+
     return {
         "bbox": (x, y, w, h),
-        "cx": x + w // 2,
-        "cy": y + h // 2,
+        "cx": cx,
+        "cy": cy,
+        "bbox_cx": x + w // 2,
+        "bbox_cy": y + h // 2,
         "area": best_area,
-    }
+    }, mask
 
 
 def score_depth_result(result):
@@ -225,6 +237,29 @@ def scan_offsets(rgb_cx, rgb_cy):
     return records, best_record
 
 
+def summarize_records(records):
+    """统计扫描结果，辅助判断 BEST none 是 helper 失败还是 ROI 无有效深度。"""
+    ok_count = 0
+    valid_count = 0
+    first_error = None
+
+    for record in records:
+        result = record["result"]
+        if result["ok"]:
+            ok_count += 1
+            if result["valid"] > 0 and result["z"] > 0:
+                valid_count += 1
+        elif first_error is None:
+            first_error = result.get("error", "UNKNOWN_ERROR")
+
+    return {
+        "ok_count": ok_count,
+        "valid_count": valid_count,
+        "total": len(records),
+        "first_error": first_error,
+    }
+
+
 def draw_scan_result(frame, target, records, best_record, sample_index):
     """在调试图上画 RGB 中心、所有扫描点和推荐 best offset。"""
     x, y, w, h = target["bbox"]
@@ -251,9 +286,12 @@ def draw_scan_result(frame, target, records, best_record, sample_index):
             color = (255, 120, 0)
         cv2.circle(frame, point, 2, color, -1)
 
-    text_lines = [f"sample={sample_index}"]
+    summary = summarize_records(records)
+    text_lines = [f"sample={sample_index} ok={summary['ok_count']}/{summary['total']} valid={summary['valid_count']}"]
     if best_record is None or not best_record["result"]["ok"]:
         text_lines.append("best: none")
+        if summary["first_error"]:
+            text_lines.append(summary["first_error"][:42])
     else:
         result = best_record["result"]
         best_point = (best_record["depth_cx"], best_record["depth_cy"])
@@ -289,10 +327,12 @@ def draw_scan_result(frame, target, records, best_record, sample_index):
         )
 
 
-def save_result_image(frame):
-    """保存最后一次扫描的调试图，便于通过 SSH 拉取查看。"""
+def save_result_image(frame, mask=None):
+    """保存最后一次扫描的调试图和红色 mask 图，便于通过 SSH 拉取查看。"""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(RESULT_IMAGE_PATH), frame)
+    if mask is not None:
+        cv2.imwrite(str(MASK_IMAGE_PATH), mask)
 
 
 def print_scan_summary(sample_index, target, best_record):
@@ -323,6 +363,7 @@ def main():
         print("START depth offset scan")
         print(f"duration={TEST_SECONDS}s interval={SAMPLE_INTERVAL_SEC:.1f}s")
         print(f"result image: {RESULT_IMAGE_PATH.relative_to(RASPBERRYPI_DIR)}")
+        print(f"mask image: {MASK_IMAGE_PATH.relative_to(RASPBERRYPI_DIR)}")
 
         sample_index = 0
         end_time = time.monotonic() + TEST_SECONDS
@@ -334,7 +375,7 @@ def main():
                 break
 
             result_frame = frame.copy()
-            target = detect_largest_red_target(frame)
+            target, mask = detect_largest_red_target(frame)
             if target is None:
                 print(f"[{sample_index:02d}] NO_TARGET")
                 cv2.putText(
@@ -347,12 +388,23 @@ def main():
                     2,
                     cv2.LINE_AA,
                 )
-                save_result_image(result_frame)
+                save_result_image(result_frame, mask)
             else:
                 records, best_record = scan_offsets(target["cx"], target["cy"])
-                print_scan_summary(sample_index, target, best_record)
+                summary = summarize_records(records)
+                if best_record is None or not best_record["result"]["ok"]:
+                    error = summary["first_error"] or "UNKNOWN_ERROR"
+                    print(
+                        f"[{sample_index:02d}] "
+                        f"RGB cx={target['cx']} cy={target['cy']} "
+                        f"bbox_center=({target['bbox_cx']},{target['bbox_cy']}) "
+                        f"ok={summary['ok_count']}/{summary['total']} "
+                        f"valid={summary['valid_count']} BEST none error={error}"
+                    )
+                else:
+                    print_scan_summary(sample_index, target, best_record)
                 draw_scan_result(result_frame, target, records, best_record, sample_index)
-                save_result_image(result_frame)
+                save_result_image(result_frame, mask)
 
             sample_index += 1
             elapsed = time.monotonic() - loop_start
