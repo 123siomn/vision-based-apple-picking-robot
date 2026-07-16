@@ -1,7 +1,6 @@
 from pathlib import Path
 import re
 import subprocess
-import time
 
 import cv2
 import numpy as np
@@ -17,14 +16,14 @@ RESULT_IMAGE_PATH = OUTPUT_DIR / "depth_offset_scan.jpg"
 MASK_IMAGE_PATH = OUTPUT_DIR / "depth_offset_mask.jpg"
 
 CAMERA_PATH = "/dev/video0"
+CAMERA_INDEX = 0
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 WARMUP_FRAMES = 10
 MIN_TARGET_AREA = 300
 
-# 默认运行 10 秒，每秒输出一次结果，方便观察目标不动时 Z 和 valid 是否稳定。
-TEST_SECONDS = 10
-SAMPLE_INTERVAL_SEC = 1.0
+# 第一版只抓一张 RGB 图并扫描一次 offset，便于快速排查相机和 depth helper 状态。
+SAMPLE_INDEX = 0
 
 # ROI 半径越大，越能容忍 RGB/Depth 小偏移，但也越容易混入背景。
 DEPTH_RADIUS = 5
@@ -136,9 +135,9 @@ def read_depth_xyz(cx, cy, radius=DEPTH_RADIUS, frames=DEPTH_FRAMES):
 
 def open_camera():
     """强制打开 Astra RGB 摄像头 /dev/video0，避免误用 /dev/video1 的 depth/metadata 节点。"""
-    camera = cv2.VideoCapture(CAMERA_PATH, cv2.CAP_V4L2)
+    camera = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
     if not camera.isOpened():
-        raise RuntimeError(f"无法打开 RGB 摄像头：{CAMERA_PATH}")
+        raise RuntimeError(f"无法打开 RGB 摄像头：{CAMERA_PATH} index={CAMERA_INDEX}")
 
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
@@ -146,9 +145,9 @@ def open_camera():
     ok, frame = camera.read()
     if not ok or frame is None:
         camera.release()
-        raise RuntimeError(f"RGB 摄像头读取失败：{CAMERA_PATH}")
+        raise RuntimeError(f"RGB 摄像头读取失败：{CAMERA_PATH} index={CAMERA_INDEX}")
 
-    print(f"RGB camera opened: {CAMERA_PATH}")
+    print(f"RGB camera opened: {CAMERA_PATH} index={CAMERA_INDEX}")
     return OpenCvCamera(camera, CAMERA_PATH)
 
 
@@ -394,56 +393,46 @@ def main():
         warmup_camera(camera)
 
         print("START depth offset scan")
-        print(f"duration={TEST_SECONDS}s interval={SAMPLE_INTERVAL_SEC:.1f}s")
+        print("mode=single_frame")
         print(f"result image: {RESULT_IMAGE_PATH.relative_to(RASPBERRYPI_DIR)}")
         print(f"mask image: {MASK_IMAGE_PATH.relative_to(RASPBERRYPI_DIR)}")
 
-        sample_index = 0
-        end_time = time.monotonic() + TEST_SECONDS
-        while time.monotonic() < end_time:
-            loop_start = time.monotonic()
-            ok, frame = camera.read()
-            if not ok:
-                print(f"[{sample_index:02d}] CAMERA_READ_FAILED")
-                break
+        ok, frame = camera.read()
+        if not ok:
+            print(f"[{SAMPLE_INDEX:02d}] CAMERA_READ_FAILED")
+            return
 
-            result_frame = frame.copy()
-            target, mask = detect_largest_red_target(frame)
-            if target is None:
-                print(f"[{sample_index:02d}] NO_TARGET")
-                cv2.putText(
-                    result_frame,
-                    "NO_TARGET",
-                    (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0,
-                    (0, 0, 255),
-                    2,
-                    cv2.LINE_AA,
+        result_frame = frame.copy()
+        target, mask = detect_largest_red_target(frame)
+        if target is None:
+            print(f"[{SAMPLE_INDEX:02d}] NO_TARGET")
+            cv2.putText(
+                result_frame,
+                "NO_TARGET",
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (0, 0, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            save_result_image(result_frame, mask)
+        else:
+            records, best_record = scan_offsets(target["cx"], target["cy"])
+            summary = summarize_records(records)
+            if best_record is None or not best_record["result"]["ok"]:
+                error = summary["first_error"] or "UNKNOWN_ERROR"
+                print(
+                    f"[{SAMPLE_INDEX:02d}] "
+                    f"RGB cx={target['cx']} cy={target['cy']} "
+                    f"bbox_center=({target['bbox_cx']},{target['bbox_cy']}) "
+                    f"ok={summary['ok_count']}/{summary['total']} "
+                    f"valid={summary['valid_count']} BEST none error={error}"
                 )
-                save_result_image(result_frame, mask)
             else:
-                records, best_record = scan_offsets(target["cx"], target["cy"])
-                summary = summarize_records(records)
-                if best_record is None or not best_record["result"]["ok"]:
-                    error = summary["first_error"] or "UNKNOWN_ERROR"
-                    print(
-                        f"[{sample_index:02d}] "
-                        f"RGB cx={target['cx']} cy={target['cy']} "
-                        f"bbox_center=({target['bbox_cx']},{target['bbox_cy']}) "
-                        f"ok={summary['ok_count']}/{summary['total']} "
-                        f"valid={summary['valid_count']} BEST none error={error}"
-                    )
-                else:
-                    print_scan_summary(sample_index, target, best_record)
-                draw_scan_result(result_frame, target, records, best_record, sample_index)
-                save_result_image(result_frame, mask)
-
-            sample_index += 1
-            elapsed = time.monotonic() - loop_start
-            sleep_time = SAMPLE_INTERVAL_SEC - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+                print_scan_summary(SAMPLE_INDEX, target, best_record)
+            draw_scan_result(result_frame, target, records, best_record, SAMPLE_INDEX)
+            save_result_image(result_frame, mask)
 
         print(f"DONE saved: {RESULT_IMAGE_PATH.relative_to(RASPBERRYPI_DIR)}")
     finally:
