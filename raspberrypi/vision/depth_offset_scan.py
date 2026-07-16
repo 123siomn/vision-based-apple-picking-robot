@@ -29,6 +29,8 @@ SAMPLE_INDEX = 0
 DEPTH_RADIUS = 5
 DEPTH_FRAMES = 4
 DEPTH_TIMEOUT_SEC = 2.0
+MIN_VALID_DEPTH_MM = 400
+MAX_VALID_DEPTH_MM = 1200
 
 # 第一版只扫 3x3 共 9 个点，避免每轮反复启动 depth helper 导致等待太久。
 # 如果 best offset 总在边缘，再扩大扫描范围做第二轮精测。
@@ -220,10 +222,12 @@ def detect_largest_red_target(frame):
 
 
 def score_depth_result(result):
-    """给扫描结果打分：第一版优先选择 valid 多、Z 有效的点。"""
+    """给扫描结果打分：只在合理距离范围内比较 valid，避免把远处背景选成 best。"""
     if not result["ok"]:
         return -1
     if result["z"] <= 0:
+        return -1
+    if result["z"] < MIN_VALID_DEPTH_MM or result["z"] > MAX_VALID_DEPTH_MM:
         return -1
     return result["valid"]
 
@@ -243,6 +247,10 @@ def scan_offsets(rgb_cx, rgb_cy):
                 f"depth=({depth_cx},{depth_cy}) ...",
                 flush=True,
             )
+            if not (0 <= depth_cx < FRAME_WIDTH and 0 <= depth_cy < FRAME_HEIGHT):
+                print("  SKIP out of range", flush=True)
+                continue
+
             result = read_depth_xyz(depth_cx, depth_cy)
             if result["ok"]:
                 print(
@@ -392,51 +400,51 @@ def main():
     try:
         warmup_camera(camera)
 
-        print("START depth offset scan")
-        print("mode=single_frame")
-        print(f"result image: {RESULT_IMAGE_PATH.relative_to(RASPBERRYPI_DIR)}")
-        print(f"mask image: {MASK_IMAGE_PATH.relative_to(RASPBERRYPI_DIR)}")
-
         ok, frame = camera.read()
         if not ok:
             print(f"[{SAMPLE_INDEX:02d}] CAMERA_READ_FAILED")
             return
-
-        result_frame = frame.copy()
-        target, mask = detect_largest_red_target(frame)
-        if target is None:
-            print(f"[{SAMPLE_INDEX:02d}] NO_TARGET")
-            cv2.putText(
-                result_frame,
-                "NO_TARGET",
-                (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1.0,
-                (0, 0, 255),
-                2,
-                cv2.LINE_AA,
-            )
-            save_result_image(result_frame, mask)
-        else:
-            records, best_record = scan_offsets(target["cx"], target["cy"])
-            summary = summarize_records(records)
-            if best_record is None or not best_record["result"]["ok"]:
-                error = summary["first_error"] or "UNKNOWN_ERROR"
-                print(
-                    f"[{SAMPLE_INDEX:02d}] "
-                    f"RGB cx={target['cx']} cy={target['cy']} "
-                    f"bbox_center=({target['bbox_cx']},{target['bbox_cy']}) "
-                    f"ok={summary['ok_count']}/{summary['total']} "
-                    f"valid={summary['valid_count']} BEST none error={error}"
-                )
-            else:
-                print_scan_summary(SAMPLE_INDEX, target, best_record)
-            draw_scan_result(result_frame, target, records, best_record, SAMPLE_INDEX)
-            save_result_image(result_frame, mask)
-
-        print(f"DONE saved: {RESULT_IMAGE_PATH.relative_to(RASPBERRYPI_DIR)}")
     finally:
         camera.release()
+
+    print("START depth offset scan")
+    print("mode=single_frame")
+    print(f"result image: {RESULT_IMAGE_PATH.relative_to(RASPBERRYPI_DIR)}")
+    print(f"mask image: {MASK_IMAGE_PATH.relative_to(RASPBERRYPI_DIR)}")
+
+    result_frame = frame.copy()
+    target, mask = detect_largest_red_target(frame)
+    if target is None:
+        print(f"[{SAMPLE_INDEX:02d}] NO_TARGET")
+        cv2.putText(
+            result_frame,
+            "NO_TARGET",
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        save_result_image(result_frame, mask)
+    else:
+        records, best_record = scan_offsets(target["cx"], target["cy"])
+        summary = summarize_records(records)
+        if best_record is None or not best_record["result"]["ok"]:
+            error = summary["first_error"] or "UNKNOWN_ERROR"
+            print(
+                f"[{SAMPLE_INDEX:02d}] "
+                f"RGB cx={target['cx']} cy={target['cy']} "
+                f"bbox_center=({target['bbox_cx']},{target['bbox_cy']}) "
+                f"ok={summary['ok_count']}/{summary['total']} "
+                f"valid={summary['valid_count']} BEST none error={error}"
+            )
+        else:
+            print_scan_summary(SAMPLE_INDEX, target, best_record)
+        draw_scan_result(result_frame, target, records, best_record, SAMPLE_INDEX)
+        save_result_image(result_frame, mask)
+
+    print(f"DONE saved: {RESULT_IMAGE_PATH.relative_to(RASPBERRYPI_DIR)}")
 
 
 if __name__ == "__main__":
