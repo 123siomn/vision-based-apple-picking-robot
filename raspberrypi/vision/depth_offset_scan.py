@@ -17,7 +17,6 @@ RESULT_IMAGE_PATH = OUTPUT_DIR / "depth_offset_scan.jpg"
 MASK_IMAGE_PATH = OUTPUT_DIR / "depth_offset_mask.jpg"
 
 CAMERA_PATH = "/dev/video0"
-CAMERA_INDEX_LIST = list(range(10))
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 WARMUP_FRAMES = 10
@@ -29,13 +28,29 @@ SAMPLE_INTERVAL_SEC = 1.0
 
 # ROI 半径越大，越能容忍 RGB/Depth 小偏移，但也越容易混入背景。
 DEPTH_RADIUS = 5
-DEPTH_FRAMES = 12
-DEPTH_TIMEOUT_SEC = 4.0
+DEPTH_FRAMES = 4
+DEPTH_TIMEOUT_SEC = 2.0
 
-# 第一版扫描范围不要太密，否则每秒内调用 depth helper 次数太多。
-# 如果发现 best offset 总在边缘，例如 30 或 -30，说明需要扩大扫描范围。
-OFFSET_X_LIST = [-30, -20, -10, 0, 10, 20, 30]
-OFFSET_Y_LIST = [-20, -10, 0, 10, 20]
+# 第一版只扫 3x3 共 9 个点，避免每轮反复启动 depth helper 导致等待太久。
+# 如果 best offset 总在边缘，再扩大扫描范围做第二轮精测。
+OFFSET_X_LIST = [-20, 0, 20]
+OFFSET_Y_LIST = [-10, 0, 10]
+
+
+class OpenCvCamera:
+    """用 OpenCV/V4L2 读取 USB 摄像头或标准 video 设备。"""
+
+    def __init__(self, camera, name):
+        self.camera = camera
+        self.name = name
+
+    def read(self):
+        """读取一帧 BGR 图像。"""
+        return self.camera.read()
+
+    def release(self):
+        """释放摄像头。"""
+        self.camera.release()
 
 
 def parse_value(line, name, value_type=float):
@@ -120,42 +135,21 @@ def read_depth_xyz(cx, cy, radius=DEPTH_RADIUS, frames=DEPTH_FRAMES):
 
 
 def open_camera():
-    """打开 RGB 摄像头，并设置为和 depth helper 当前测试一致的 640x480。"""
-    candidates = []
-    video_dir = Path("/dev")
-    if video_dir.exists():
-        candidates.extend(sorted(video_dir.glob("video*")))
+    """强制打开 Astra RGB 摄像头 /dev/video0，避免误用 /dev/video1 的 depth/metadata 节点。"""
+    camera = cv2.VideoCapture(CAMERA_PATH, cv2.CAP_V4L2)
+    if not camera.isOpened():
+        raise RuntimeError(f"无法打开 RGB 摄像头：{CAMERA_PATH}")
 
-    # 如果 /dev/video* 枚举不到，也继续尝试常见数字索引，兼容不同 OpenCV 后端。
-    for index in CAMERA_INDEX_LIST:
-        candidate = Path(f"/dev/video{index}")
-        if candidate not in candidates:
-            candidates.append(candidate)
+    camera.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
 
-    for candidate in candidates:
-        camera = cv2.VideoCapture(str(candidate), cv2.CAP_V4L2)
-        if camera.isOpened():
-            camera.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-            ok, _ = camera.read()
-            if ok:
-                print(f"RGB camera opened: {candidate}")
-                return camera
-            camera.release()
+    ok, frame = camera.read()
+    if not ok or frame is None:
+        camera.release()
+        raise RuntimeError(f"RGB 摄像头读取失败：{CAMERA_PATH}")
 
-    for index in CAMERA_INDEX_LIST:
-        camera = cv2.VideoCapture(index, cv2.CAP_V4L2)
-        if camera.isOpened():
-            camera.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-            ok, _ = camera.read()
-            if ok:
-                print(f"RGB camera opened: index {index}")
-                return camera
-            camera.release()
-
-    existing_devices = ", ".join(str(path) for path in sorted(video_dir.glob("video*"))) if video_dir.exists() else "none"
-    raise RuntimeError(f"无法打开 RGB 摄像头，已扫描 {CAMERA_PATH} 和 0-9，当前设备：{existing_devices}")
+    print(f"RGB camera opened: {CAMERA_PATH}")
+    return OpenCvCamera(camera, CAMERA_PATH)
 
 
 
@@ -245,7 +239,19 @@ def scan_offsets(rgb_cx, rgb_cy):
         for offset_x in OFFSET_X_LIST:
             depth_cx = rgb_cx + offset_x
             depth_cy = rgb_cy + offset_y
+            print(
+                f"scan offset=({offset_x},{offset_y}) "
+                f"depth=({depth_cx},{depth_cy}) ...",
+                flush=True,
+            )
             result = read_depth_xyz(depth_cx, depth_cy)
+            if result["ok"]:
+                print(
+                    f"  OK z={result['z']:.1f} valid={result['valid']}",
+                    flush=True,
+                )
+            else:
+                print(f"  FAIL {result.get('error')}", flush=True)
 
             record = {
                 "offset_x": offset_x,
