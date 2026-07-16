@@ -17,6 +17,7 @@ RESULT_IMAGE_PATH = OUTPUT_DIR / "depth_offset_scan.jpg"
 MASK_IMAGE_PATH = OUTPUT_DIR / "depth_offset_mask.jpg"
 
 CAMERA_PATH = "/dev/video0"
+CAMERA_INDEX_LIST = list(range(10))
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 WARMUP_FRAMES = 10
@@ -120,16 +121,42 @@ def read_depth_xyz(cx, cy, radius=DEPTH_RADIUS, frames=DEPTH_FRAMES):
 
 def open_camera():
     """打开 RGB 摄像头，并设置为和 depth helper 当前测试一致的 640x480。"""
-    camera = cv2.VideoCapture(CAMERA_PATH)
-    if not camera.isOpened():
-        camera.release()
-        camera = cv2.VideoCapture(0)
-    if not camera.isOpened():
-        raise RuntimeError(f"无法打开 RGB 摄像头：{CAMERA_PATH}")
+    candidates = []
+    video_dir = Path("/dev")
+    if video_dir.exists():
+        candidates.extend(sorted(video_dir.glob("video*")))
 
-    camera.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-    return camera
+    # 如果 /dev/video* 枚举不到，也继续尝试常见数字索引，兼容不同 OpenCV 后端。
+    for index in CAMERA_INDEX_LIST:
+        candidate = Path(f"/dev/video{index}")
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    for candidate in candidates:
+        camera = cv2.VideoCapture(str(candidate), cv2.CAP_V4L2)
+        if camera.isOpened():
+            camera.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+            ok, _ = camera.read()
+            if ok:
+                print(f"RGB camera opened: {candidate}")
+                return camera
+            camera.release()
+
+    for index in CAMERA_INDEX_LIST:
+        camera = cv2.VideoCapture(index, cv2.CAP_V4L2)
+        if camera.isOpened():
+            camera.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+            ok, _ = camera.read()
+            if ok:
+                print(f"RGB camera opened: index {index}")
+                return camera
+            camera.release()
+
+    existing_devices = ", ".join(str(path) for path in sorted(video_dir.glob("video*"))) if video_dir.exists() else "none"
+    raise RuntimeError(f"无法打开 RGB 摄像头，已扫描 {CAMERA_PATH} 和 0-9，当前设备：{existing_devices}")
+
 
 
 def warmup_camera(camera):
