@@ -13,6 +13,8 @@ extern "C" {
 #define BASE_CONTROL_MAX_PWM          99
 /* 超声波安全停车距离，单位 cm。 */
 #define BASE_CONTROL_SAFE_DISTANCE_CM 20.0f
+/* 当前演示阶段关闭超声波安全停车，避免无关测距读数干扰循迹和视觉微调。 */
+#define BASE_CONTROL_ENABLE_ULTRASONIC_SAFETY 0u
 
 /* 底盘运行状态，由树莓派协议命令切换。 */
 typedef enum

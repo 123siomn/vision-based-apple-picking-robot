@@ -1,15 +1,27 @@
 #include "base_control.h"
 #include "motor.h"
 #include "HC_SR04.h"
+#include "usart.h"
+#include <stdio.h>
+#include <string.h>
 
-#define BASE_LINE_TURN_PWM            15
 #define BASE_LINE_BLACK_ACTIVE_LEVEL  GPIO_PIN_SET
+/* 临时循迹诊断开关：1 时通过 USART1 周期输出传感器、PWM、编码器和速度。 */
+#define BASE_LINE_DEBUG_ENABLE        0u
+#define BASE_LINE_DEBUG_INTERVAL_MS   200u
 
 static BaseControl_State_t g_eBaseControlState = BASE_STATE_IDLE;
 static uint8_t g_ucBaseSafetyEnable = 0u;
 static uint32_t g_ulBaseSafetyLastTick = 0u;
 static uint32_t g_ulBaseLineTrackLastTick = 0u;
-static int16_t g_iBaseLineBasePwm = 30;
+static uint32_t g_ulBaseLineDebugLastTick = 0u;
+static int16_t g_iBaseLineBasePwm = 50;
+
+/* 编码器与速度由定时中断更新，仅用于当前循迹诊断输出，不参与控制。 */
+extern short Encode1Count;
+extern short Encode2Count;
+extern float Motor1Speed;
+extern float Motor2Speed;
 
 /**
  * @brief  限制开环 PWM 到电机驱动允许范围。
@@ -71,6 +83,7 @@ static int16_t BaseControl_SpeedToPwm(float speed)
  */
 static void BaseControl_SafetyTask(void)
 {
+#if (BASE_CONTROL_ENABLE_ULTRASONIC_SAFETY != 0u)
 	float distance;
 	uint32_t now = HAL_GetTick();
 
@@ -90,6 +103,10 @@ static void BaseControl_SafetyTask(void)
 	{
 		BaseControl_Stop();
 	}
+#else
+	/* 演示阶段不读取超声波，避免测距异常改变底盘输出。 */
+	return;
+#endif
 }
 
 /**
@@ -116,6 +133,49 @@ static void BaseControl_ReadLineState(uint8_t line[4])
 }
 
 /**
+ * @brief  周期输出当前循迹传感器、开环 PWM 和编码器速度，供串口助手诊断。
+ * @param  line: 四路黑线检测结果
+ * @param  action: 当前循迹动作文本
+ * @param  rightPwm: 右轮 PWM
+ * @param  leftPwm: 左轮 PWM
+ * @return None
+ */
+static void BaseControl_PrintLineDebug(const uint8_t line[4], const char *action,
+	int16_t rightPwm, int16_t leftPwm)
+{
+#if (BASE_LINE_DEBUG_ENABLE != 0u)
+	char text[180];
+	uint32_t now = HAL_GetTick();
+
+	if((now - g_ulBaseLineDebugLastTick) < BASE_LINE_DEBUG_INTERVAL_MS)
+	{
+		return;
+	}
+	g_ulBaseLineDebugLastTick = now;
+
+	(void)sprintf(text,
+		"DBG LINE1 %s LINE2 %s LINE3 %s LINE4 %s ACT %s PWM_R %d PWM_L %d ENC_R %d ENC_L %d SPD_R %.2f SPD_L %.2f\r\n",
+		(line[0] != 0u) ? "BLACK" : "WHITE",
+		(line[1] != 0u) ? "BLACK" : "WHITE",
+		(line[2] != 0u) ? "BLACK" : "WHITE",
+		(line[3] != 0u) ? "BLACK" : "WHITE",
+		action,
+		(int)rightPwm,
+		(int)leftPwm,
+		(int)Encode1Count,
+		(int)Encode2Count,
+		Motor1Speed,
+		Motor2Speed);
+	(void)HAL_UART_Transmit(&huart1, (uint8_t *)text, (uint16_t)strlen(text), 100u);
+#else
+	(void)line;
+	(void)action;
+	(void)rightPwm;
+	(void)leftPwm;
+#endif
+}
+
+/**
  * @brief  执行测试通过的开环红外循迹逻辑。
  * @param  None
  * @return None
@@ -125,6 +185,7 @@ static void BaseControl_LineTrackTask(void)
 	uint8_t line[4];
 	int16_t rightPwm;
 	int16_t leftPwm;
+	const char *action = "STRAIGHT";
 	uint32_t now = HAL_GetTick();
 
 	if((now - g_ulBaseLineTrackLastTick) < 20u)
@@ -139,18 +200,22 @@ static void BaseControl_LineTrackTask(void)
 
 	/* 实测规则：0=白底板，1=黑线；1号只读取不参与控制。 */
 	/* 1/2号在右侧，2号检测黑线时向右修正；3/4号在左侧，3/4号检测黑线时向左修正。 */
+	/* 临时强差速诊断：2 号黑线时右轮停止；3/4 号黑线时左轮停止。 */
 	if(line[1] != 0u)
 	{
-		rightPwm = BaseControl_LimitPwm(g_iBaseLineBasePwm - BASE_LINE_TURN_PWM);
-		leftPwm = BaseControl_LimitPwm(g_iBaseLineBasePwm + BASE_LINE_TURN_PWM);
+		rightPwm = 0;
+		leftPwm = g_iBaseLineBasePwm;
+		action = "RIGHT_STOP";
 	}
 	else if((line[2] != 0u) || (line[3] != 0u))
 	{
-		rightPwm = BaseControl_LimitPwm(g_iBaseLineBasePwm + BASE_LINE_TURN_PWM);
-		leftPwm = BaseControl_LimitPwm(g_iBaseLineBasePwm - BASE_LINE_TURN_PWM);
+		rightPwm = g_iBaseLineBasePwm;
+		leftPwm = 0;
+		action = "LEFT_STOP";
 	}
 
 	BaseControl_SetOpenLoopPwm(rightPwm, leftPwm);
+	BaseControl_PrintLineDebug(line, action, rightPwm, leftPwm);
 }
 
 /**
@@ -195,7 +260,13 @@ BaseControl_State_t BaseControl_GetState(void)
  */
 void BaseControl_SetSafetyEnable(uint8_t enable)
 {
+#if (BASE_CONTROL_ENABLE_ULTRASONIC_SAFETY != 0u)
 	g_ucBaseSafetyEnable = (enable == 0u) ? 0u : 1u;
+#else
+	/* 即使收到旧版 SAFE 命令，也始终保持超声波功能关闭。 */
+	(void)enable;
+	g_ucBaseSafetyEnable = 0u;
+#endif
 	g_ulBaseSafetyLastTick = 0u;
 }
 

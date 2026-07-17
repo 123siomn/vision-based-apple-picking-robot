@@ -2,13 +2,20 @@
 #include "base_control.h"
 #include "adc.h"
 #include "usart.h"
+#include "motor.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
-#define BASE_PROTOCOL_RESPONSE_SIZE 128
+#define BASE_PROTOCOL_RESPONSE_SIZE 256
 #define BASE_PROTOCOL_TARGET "BASE"
 #define BASE_PROTOCOL_DEFAULT_SEQ "000"
+
+/* 编码器与轮速由 TIM1 中断更新，STATUS 只读取并回传，不参与控制。 */
+extern short Encode1Count;
+extern short Encode2Count;
+extern float Motor1Speed;
+extern float Motor2Speed;
 
 /**
  * @brief  计算协议 payload 的 8 位累加和。
@@ -183,25 +190,60 @@ static const char *BaseProtocol_GetStateText(void)
 static void BaseProtocol_SendStatus(const char *seq)
 {
 	char detail[BASE_PROTOCOL_RESPONSE_SIZE];
+	char batteryText[20];
+	uint8_t line1;
+	uint8_t line2;
+	uint8_t line3;
+	uint8_t line4;
+	const char *action;
 	int32_t batteryMv;
+
+	line1 = (HAL_GPIO_ReadPin(HW_OUT_1_GPIO_Port, HW_OUT_1_Pin) == GPIO_PIN_SET) ? 1u : 0u;
+	line2 = (HAL_GPIO_ReadPin(HW_OUT_2_GPIO_Port, HW_OUT_2_Pin) == GPIO_PIN_SET) ? 1u : 0u;
+	line3 = (HAL_GPIO_ReadPin(HW_OUT_3_GPIO_Port, HW_OUT_3_Pin) == GPIO_PIN_SET) ? 1u : 0u;
+	line4 = (HAL_GPIO_ReadPin(HW_OUT_4_GPIO_Port, HW_OUT_4_Pin) == GPIO_PIN_SET) ? 1u : 0u;
+
+	if(line2 != 0u)
+	{
+		action = "RIGHT_STOP";
+	}
+	else if((line3 != 0u) || (line4 != 0u))
+	{
+		action = "LEFT_STOP";
+	}
+	else
+	{
+		action = "STRAIGHT";
+	}
 
 	batteryMv = BaseAdc_ReadBatteryVoltageMv();
 	if(batteryMv < 0)
 	{
-		(void)sprintf(detail, "STATE=%s,SAFE=%s,VBAT=ERR",
-			BaseProtocol_GetStateText(),
-			(BaseControl_GetSafetyEnable() != 0u) ? "ON" : "OFF");
+		(void)sprintf(batteryText, "ERR");
 	}
 	else
 	{
-		(void)sprintf(detail, "STATE=%s,SAFE=%s,VBAT=%ldmV",
-			BaseProtocol_GetStateText(),
-			(BaseControl_GetSafetyEnable() != 0u) ? "ON" : "OFF",
-			(long)batteryMv);
+		(void)sprintf(batteryText, "%ldmV", (long)batteryMv);
 	}
+
+	(void)sprintf(detail,
+		"STATE=%s,SAFE=%s,VBAT=%s,LINE=%u%u%u%u,ACT=%s,PWM_R=%d,PWM_L=%d,ENC_R=%d,ENC_L=%d,SPD_R=%.2f,SPD_L=%.2f",
+		BaseProtocol_GetStateText(),
+		(BaseControl_GetSafetyEnable() != 0u) ? "ON" : "OFF",
+		batteryText,
+		(unsigned int)line1,
+		(unsigned int)line2,
+		(unsigned int)line3,
+		(unsigned int)line4,
+		action,
+		Motor_GetLastCmd1(),
+		Motor_GetLastCmd2(),
+		(int)Encode1Count,
+		(int)Encode2Count,
+		Motor1Speed,
+		Motor2Speed);
 	BaseProtocol_SendFrame(seq, "STATUS", detail);
 }
-
 /**
  * @brief  执行 MOVE 命令，协议格式保持树莓派原格式不变。
  * @param  seq: 请求帧中的序号
@@ -249,9 +291,14 @@ static void BaseProtocol_HandleSafe(const char *seq, char *switchText)
 
 	if(strcmp(switchText, "ON") == 0)
 	{
+#if (BASE_CONTROL_ENABLE_ULTRASONIC_SAFETY == 0u)
+		BaseProtocol_SendErr(seq, "DISABLED");
+		return;
+#else
 		BaseControl_SetSafetyEnable(1u);
 		BaseProtocol_SendAck(seq, "SAFE");
 		return;
+#endif
 	}
 	if(strcmp(switchText, "OFF") == 0)
 	{

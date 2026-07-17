@@ -295,9 +295,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
     if((TimerCount % 10U) == 0U)
     {
+      /* 当前底盘使用开环 PWM，保留里程估算但不执行 PID，避免覆盖循迹输出。 */
       Mileage += 0.02f * Motor1Speed * 22.0f;
-      Motor_Set((int)PID_realize_limit(&pidMotor1Speed, Motor1Speed, motorPidGetOutputLimit(), motorPidGetErrSumLimit()),
-                (int)PID_realize_limit(&pidMotor2Speed, Motor2Speed, motorPidGetOutputLimit(), motorPidGetErrSumLimit()));
       TimerCount = 0U;
     }
   }
