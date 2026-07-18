@@ -39,45 +39,58 @@ FRAME_HEIGHT = 480
 SERVER_PORT = 8080
 JPEG_QUALITY = 80
 
-MIN_TARGET_AREA = 500
-TARGET_STABLE_FRAMES = 5
+MIN_TARGET_AREA = 600
+# 首次发现合格目标后立即停止循迹，避免窄视场内目标被车身惯性冲出画面。
+TARGET_STABLE_FRAMES = 1
+# 目标连续落入抓取框的帧数。达到该值后才允许切换到一次深度读取。
+TARGET_CENTER_STABLE_FRAMES = 3
 TARGET_LOST_TIMEOUT_SEC = 2.0
 
-# 固定抓取位置的实测视觉参考点与深度范围。
-TARGET_CX = 316
-TARGET_CY = 235
+# 固定抓取位置的图像参考点，采用 640x480 图像中心。
+TARGET_CX = 320
+TARGET_CY = 240
 CX_TOL = 20
 CY_TOL = 20
-Z_TRACK_EXIT_MAX_MM = 820.0
-Z_EXPECTED_ALIGN_MIN_MM = 760.0
-Z_GRAB_MIN_MM = 700.0
-Z_GRAB_MAX_MM = 745.0
+# 基于 cx 的演示分段阈值：循迹区、转向加前进区、转向锁定区、后退恢复区。
+CX_TRACKING_LIMIT = 370
+CX_TURN_FORWARD_LIMIT = 340
+CX_RETREAT_TRIGGER = 320
+CX_RETREAT_RELEASE = 330
+# 机器人坐标约定：X 为车头前后方向，Y 为车体左右方向。
+# Astra helper 的 z 是光轴前方距离，对当前相机安装近似等于机器人 X；
+# helper 的 x 是图像水平坐标，近似等于机器人 Y（左负、右正）。
+X_GRAB_MIN_MM = 700.0
+X_GRAB_MAX_MM = 745.0
 
 # 只在已经发现目标后读取深度。每次 helper 调用会暂时释放 RGB 节点。
+# 当前演示以视觉居中为抓取条件，关闭深度调用以保证 RGB 视频流稳定。
+ENABLE_DEPTH_CHECK = False
 DEPTH_EXE = RASPBERRYPI_DIR / "depth_helper" / "depth_xyz_reader"
 DEPTH_RADIUS = 5
 DEPTH_FRAMES = 4
 DEPTH_TIMEOUT_SEC = 8.0
-DEPTH_INTERVAL_SEC = 1.5
 DEPTH_MIN_VALID = 20
 # depth helper 本身会在一次调用内读取多帧并对有效 ROI 深度取中位数。
 # 当前 Astra SDK 与 V4L2 RGB 节点不能稳定地反复切换，因此固定演示只采用一次有效深度结果。
 DEPTH_MEDIAN_WINDOW = 1
-MAX_CONSECUTIVE_DEPTH_FAILURES = 3
 CAMERA_RELEASE_SETTLE_SEC = 0.5
 CAMERA_REOPEN_TIMEOUT_SEC = 12.0
 
 # MOVE 协议接收 -5.0~5.0 的速度值，STM32 再映射到 -99~99 开环 PWM。
-# 当前带载演示使用直行 PWM 50、转向低速轮 40 和高速轮 60。
-# 2.02 约映射为 PWM 40，2.53 约映射为 PWM 50，3.03 约映射为 PWM 60；每次短脉冲后必须停下并等待相机稳定。
+# 正常循迹使用 PWM 50。发现视觉目标后切换到 cx 分段闭环。
 TRACK_PWM = 50
-ALIGN_FORWARD_SPEED = 2.53
-ALIGN_TURN_SLOW_SPEED = 2.02
-ALIGN_TURN_FAST_SPEED = 3.03
-ALIGN_PULSE_MS = 60
-ALIGN_SETTLE_SEC = 0.8
-MAX_ALIGN_PULSES = 40
-FINE_ALIGN_TIMEOUT_SEC = 90.0
+# cx 在 340~369 时，原地转向三次后以前进步进靠近目标，均约 PWM 55。
+ALIGN_ROTATE_SPEED = 2.78
+ALIGN_FORWARD_SPEED = 2.78
+# cx 小于 320 时优先后退恢复，约 PWM 70。
+RETREAT_SPEED = 3.54
+# 视觉闭环中所有前进、后退和原地转向动作统一使用 0.3 秒脉冲。
+ALIGN_PULSE_MS = 300
+ALIGN_SETTLE_SEC = 0.35
+ALIGN_TURNS_BEFORE_FORWARD = 3
+
+# 带载死区测试：固定两轮相同 PWM，持续观察能否在当前负载下稳定起步。
+DEADZONE_TEST_PWM = 40
 
 # 固定演示用机械臂动作：ID1=500 张开，ID1=1201 夹紧。
 HOME_TIME_MS = 3000
@@ -96,6 +109,8 @@ class DemoState(str, Enum):
     LINE_TRACK = "LINE_TRACK"
     TARGET_DETECTED = "TARGET_DETECTED"
     FINE_ALIGN = "FINE_ALIGN"
+    DEPTH_CHECK = "DEPTH_CHECK"
+    DEADZONE_TEST = "DEADZONE_TEST"
     READY_WAIT = "READY_WAIT"
     CLOSE_WAIT = "CLOSE_WAIT"
     RETURN_HOME_WAIT = "RETURN_HOME_WAIT"
@@ -117,6 +132,11 @@ def parse_value(line, name, value_type=float):
     if match is None:
         return None
     return value_type(match.group(1))
+
+
+def pwm_to_move_speed(pwm):
+    """将 0~99 的开环 PWM 换算为既有 MOVE 协议使用的 0~5.0 数值。"""
+    return pwm * 5.0 / 99.0
 
 
 def read_depth_xyz(cx, cy):
@@ -299,6 +319,10 @@ class RobotLinks:
         """启用或关闭 STM32 现有红外循迹状态。"""
         return self._send("BASE", "TRACK", ("ON" if enabled else "OFF",))
 
+    def base_track_pwm(self, pwm):
+        """设置底盘红外循迹的开环基础 PWM，范围由 STM32 限制为 0~99。"""
+        return self._send("BASE", "TRACKPWM", (pwm,))
+
     def base_move(self, left_speed, right_speed):
         """使用底盘既有 MOVE 命令发送 -5.0~5.0 的左右轮速度值。"""
         return self._send("BASE", "MOVE", (left_speed, right_speed))
@@ -334,8 +358,10 @@ class RobotLinks:
 class DemoController:
     """一次抓取演示的上层状态机，只在相机线程内发送串口控制命令。"""
 
-    def __init__(self, links):
+    def __init__(self, links, deadzone_test=False, deadzone_pwm=DEADZONE_TEST_PWM):
         self.links = links
+        self.deadzone_test = deadzone_test
+        self.deadzone_test_pwm = deadzone_pwm
         self.lock = threading.RLock()
         self.state = DemoState.IDLE
         self.message = "等待开始"
@@ -343,20 +369,22 @@ class DemoController:
         self.reset_requested = False
         self.state_deadline = 0.0
         self.target_stable_count = 0
+        self.target_center_stable_count = 0
         self.target_lost_since = None
         self.depth_history = deque(maxlen=DEPTH_MEDIAN_WINDOW)
         self.latest_depth = None
         self.last_depth_request_time = 0.0
         self.depth_failure_count = 0
-        self.depth_generation = 0
-        self.last_forward_depth_generation = -1
         self.align_pulse_count = 0
-        self.fine_align_deadline = 0.0
+        self.align_turns_since_forward = 0
+        self.turn_only_after_retreat = False
         self.pulse_stop_at = 0.0
         self.settle_until = 0.0
         self.last_base_action = "STOP"
         self.base_status_detail = "waiting"
         self.last_base_status_time = 0.0
+        self.deadzone_pwm = self.deadzone_test_pwm
+        self.deadzone_phase = "IDLE"
 
     def request_start(self):
         """由网页请求开始；真正串口动作由相机线程安全执行。"""
@@ -379,13 +407,22 @@ class DemoController:
                 "depth": depth,
                 "depth_samples": len(self.depth_history),
                 "align_pulses": self.align_pulse_count,
+                "align_turns_since_forward": self.align_turns_since_forward,
+                "turn_only_after_retreat": self.turn_only_after_retreat,
                 "base_action": self.last_base_action,
                 "base_status": self.base_status_detail,
+                "deadzone_pwm": self.deadzone_pwm,
+                "deadzone_phase": self.deadzone_phase,
             }
 
     def needs_base_status(self):
         """仅在循迹阶段按固定周期查询一次底盘诊断状态，避免占满串口。"""
-        if self.state != DemoState.LINE_TRACK:
+        if self.state not in (
+            DemoState.LINE_TRACK,
+            DemoState.TARGET_DETECTED,
+            DemoState.FINE_ALIGN,
+            DemoState.DEADZONE_TEST,
+        ):
             return False
         return time.monotonic() - self.last_base_status_time >= BASE_STATUS_INTERVAL_SEC
 
@@ -407,10 +444,11 @@ class DemoController:
             self.last_base_action = "STOP"
         except Exception as exc:
             print(f"BASE_STOP_FAILED: {exc}", flush=True)
-        try:
-            self.links.arm_home(HOME_TIME_MS)
-        except Exception as exc:
-            print(f"ARM_HOME_FAILED: {exc}", flush=True)
+        if not self.deadzone_test:
+            try:
+                self.links.arm_home(HOME_TIME_MS)
+            except Exception as exc:
+                print(f"ARM_HOME_FAILED: {exc}", flush=True)
         self._set_state(final_state, reason)
 
     def _begin_home_then_track(self):
@@ -427,24 +465,51 @@ class DemoController:
         self.state_deadline = time.monotonic() + HOME_TIME_MS / 1000.0 + 0.3
         self._set_state(DemoState.HOME_WAIT, "机械臂回中位")
 
+    def _begin_deadzone_test(self):
+        """初始化带载死区测试，仅关闭循迹并停止底盘，不操作机械臂。"""
+        try:
+            self.links.base_track(False)
+            self.links.base_stop()
+            self.last_base_action = "STOP"
+        except Exception as exc:
+            self._safe_stop_home(f"死区测试启动失败：{exc}")
+            return
+
+        self._reset_cycle_data()
+        self.deadzone_pwm = self.deadzone_test_pwm
+        try:
+            speed = pwm_to_move_speed(self.deadzone_pwm)
+            self.links.base_move(speed, speed)
+            self.last_base_action = f"DEADZONE_HOLD_{self.deadzone_pwm}"
+            self.deadzone_phase = "RUN"
+            self._set_state(
+                DemoState.DEADZONE_TEST,
+                f"负载死区固定测试：左右轮 PWM={self.deadzone_pwm}",
+            )
+        except Exception as exc:
+            self._safe_stop_home(f"死区测试通信失败：{exc}")
+
     def _reset_cycle_data(self):
         """清除上一轮视觉、深度和微调记录。"""
         self.target_stable_count = 0
+        self.target_center_stable_count = 0
         self.target_lost_since = None
         self.depth_history.clear()
         self.latest_depth = None
         self.last_depth_request_time = 0.0
         self.depth_failure_count = 0
-        self.depth_generation = 0
-        self.last_forward_depth_generation = -1
         self.align_pulse_count = 0
-        self.fine_align_deadline = 0.0
+        self.align_turns_since_forward = 0
+        self.turn_only_after_retreat = False
         self.pulse_stop_at = 0.0
         self.settle_until = 0.0
+        self.deadzone_pwm = self.deadzone_test_pwm
+        self.deadzone_phase = "IDLE"
 
     def _start_tracking(self):
         """进入正常红外循迹阶段。"""
         try:
+            self.links.base_track_pwm(TRACK_PWM)
             self.links.base_track(True)
             self.last_base_action = "TRACK_ON"
             self._set_state(DemoState.LINE_TRACK, f"循迹中 PWM={TRACK_PWM}")
@@ -452,25 +517,30 @@ class DemoController:
             self._safe_stop_home(f"无法启动循迹：{exc}")
 
     def _open_gripper(self):
-        """首次稳定发现目标后只张开夹爪，机械臂其它关节保持中位。"""
+        """目标首次进入手动区时先停车一次，再张开夹爪并进入后续手动动作。"""
         try:
+            self.links.base_stop()
+            self.last_base_action = "STOP"
             self.links.arm_servo(1, READY_OPEN_POSE[0], OPEN_TIME_MS)
-            self._set_state(DemoState.TARGET_DETECTED, "发现目标，夹爪已张开，采样深度")
+            self.state_deadline = time.monotonic() + OPEN_TIME_MS / 1000.0 + 0.2
+            self._set_state(
+                DemoState.TARGET_DETECTED,
+                "发现目标，底盘已停车一次，夹爪张开中",
+            )
         except Exception as exc:
             self._safe_stop_home(f"夹爪张开失败：{exc}")
 
     def _stop_tracking_for_fine_align(self):
-        """目标进入预对准距离后退出循迹，开始短脉冲视觉微调。"""
+        """夹爪张开完成后停止底盘，后续进入手动脉冲控制且不再重新开启循迹。"""
         try:
-            self.links.base_track(False)
             self.links.base_stop()
             self.last_base_action = "STOP"
         except Exception as exc:
             self._safe_stop_home(f"停止循迹失败：{exc}")
             return
 
-        self.fine_align_deadline = time.monotonic() + FINE_ALIGN_TIMEOUT_SEC
         self.settle_until = time.monotonic() + ALIGN_SETTLE_SEC
+        self.target_center_stable_count = 0
         self._set_state(DemoState.FINE_ALIGN, "退出循迹，等待图像稳定后微调")
 
     def _start_fixed_grab_after_depth(self, target, depth):
@@ -488,24 +558,29 @@ class DemoController:
 
         if abs(error_x) > CX_TOL or abs(error_y) > CY_TOL:
             self._safe_stop_home(
-                f"目标未进入固定抓取框 ex={error_x}px ey={error_y}px"
+                f"目标未进入抓取框 dx={error_x}px dy={error_y}px"
             )
             return
 
-        if Z_GRAB_MIN_MM <= depth["z"] <= Z_GRAB_MAX_MM:
+        if X_GRAB_MIN_MM <= depth["robot_x"] <= X_GRAB_MAX_MM:
             self._start_ready_pose()
             return
 
-        self._safe_stop_home(f"固定抓取距离不匹配 Z={depth['z']:.1f}mm")
+        self._safe_stop_home(f"固定抓取距离不匹配 X={depth['robot_x']:.1f}mm")
 
-    def _start_base_pulse(self, left_speed, right_speed, action):
+    def _start_base_pulse(self, left_speed, right_speed, action, detail=""):
         """执行一次有限时长的开环底盘脉冲，结束后必定 STOP。"""
         try:
             self.links.base_move(left_speed, right_speed)
             self.last_base_action = action
             self.pulse_stop_at = time.monotonic() + ALIGN_PULSE_MS / 1000.0
             self.align_pulse_count += 1
-            self.message = f"{action} 第 {self.align_pulse_count}/{MAX_ALIGN_PULSES} 次"
+            self.message = f"{action} 第 {self.align_pulse_count} 次 {detail}".strip()
+            print(
+                f"ALIGN {action} pulse={self.align_pulse_count} "
+                f"{detail}",
+                flush=True,
+            )
         except Exception as exc:
             self._safe_stop_home(f"底盘微调失败：{exc}")
 
@@ -558,63 +633,54 @@ class DemoController:
         self.state_deadline = time.monotonic() + HOME_TIME_MS / 1000.0 + 0.3
         self._set_state(DemoState.RETURN_HOME_WAIT, "机械臂回中位，夹爪保持夹紧")
 
-    def _depth_median(self):
-        """返回最近有效深度样本的中位数；未满窗口时返回 None。"""
-        if len(self.depth_history) < DEPTH_MEDIAN_WINDOW:
-            return None
-        values = sorted(sample["z"] for sample in self.depth_history)
-        return values[len(values) // 2]
-
     def needs_depth(self, target):
-        """只在已发现目标且尚未抓取时按周期发起一次深度读取。"""
+        """仅在 RGB 已连续居中后读取一次深度，避免对准阶段抢占相机。"""
+        if not ENABLE_DEPTH_CHECK:
+            return False
         if target is None:
             return False
-        if self.state not in (DemoState.TARGET_DETECTED, DemoState.FINE_ALIGN):
+        if self.state != DemoState.DEPTH_CHECK:
             return False
-        # 微调脉冲与停车稳定阶段不切换 Astra 接口，避免用运动中的旧像素读深度。
-        if self.pulse_stop_at > 0.0 or time.monotonic() < self.settle_until:
-            return False
-        return time.monotonic() - self.last_depth_request_time >= DEPTH_INTERVAL_SEC
+        return self.last_depth_request_time <= 0.0
 
     def accept_depth(self, depth, target):
         """处理一次深度结果，决定继续循迹或执行固定位置的一次抓取。"""
         self.last_depth_request_time = time.monotonic()
         depth["cx"] = target["cx"]
         depth["cy"] = target["cy"]
+
+        # 将深度相机坐标转换为本项目统一的底盘坐标命名。
+        # 当前相机光轴近似朝车头，故 z 对应前后 X，x 对应左右 Y。
+        if depth.get("ok"):
+            depth["robot_x"] = depth["z"]
+            depth["robot_y"] = depth["x"]
         self.latest_depth = depth
 
         if not depth.get("ok"):
             self.depth_failure_count += 1
             self.message = depth.get("error", "DEPTH_FAILED")
             print(f"DEPTH_FAILED: {self.message}", flush=True)
-            if self.depth_failure_count >= MAX_CONSECUTIVE_DEPTH_FAILURES:
-                self._safe_stop_home("深度连续读取失败")
+            self._safe_stop_home("深度读取失败")
             return
 
         if depth["valid"] < DEPTH_MIN_VALID:
             self.depth_failure_count += 1
             self.message = f"深度有效点过少 valid={depth['valid']}"
             print(f"DEPTH_IGNORED valid={depth['valid']}", flush=True)
-            if self.depth_failure_count >= MAX_CONSECUTIVE_DEPTH_FAILURES:
-                self._safe_stop_home("深度有效点连续不足")
+            self._safe_stop_home("深度有效点不足")
             return
 
         self.depth_failure_count = 0
         self.depth_history.append(depth)
-        self.depth_generation += 1
         print(
-            f"DEPTH_OK z={depth['z']:.1f}mm valid={depth['valid']} "
+            f"DEPTH_OK X={depth['robot_x']:.1f}mm Y={depth['robot_y']:.1f}mm "
+            f"valid={depth['valid']} "
             f"samples={len(self.depth_history)}/{DEPTH_MEDIAN_WINDOW}",
             flush=True,
         )
 
-        if self.state == DemoState.TARGET_DETECTED:
-            if depth["z"] < Z_GRAB_MIN_MM:
-                self._safe_stop_home(f"目标过近 Z={depth['z']:.1f}mm")
-            elif depth["z"] <= Z_TRACK_EXIT_MAX_MM:
-                self._start_fixed_grab_after_depth(target, depth)
-            else:
-                self.message = f"继续循迹 Z={depth['z']:.1f}mm"
+        if self.state == DemoState.DEPTH_CHECK:
+            self._start_fixed_grab_after_depth(target, depth)
 
     def is_post_depth_sequence(self):
         """判断是否已进入不再依赖 RGB 相机的机械臂执行阶段。"""
@@ -627,47 +693,94 @@ class DemoController:
         )
 
     def _fine_align_task(self, target, now):
-        """使用 RGB 中心误差和分段深度结果进行一次一次的底盘微调。"""
-        if now >= self.fine_align_deadline:
-            self._safe_stop_home("视觉微调超时")
-            return
-        if self.align_pulse_count >= MAX_ALIGN_PULSES:
-            self._safe_stop_home("视觉微调次数达到上限")
-            return
+        """按 cx 分段执行前进、原地转向和后退，并在每次停车后重检蓝色抓取框。"""
         if self.pulse_stop_at > 0.0 or now < self.settle_until:
-            return
-
-        z_mm = self._depth_median()
-        if z_mm is None:
-            self.message = "等待有效深度"
-            return
-        if z_mm < Z_GRAB_MIN_MM:
-            self._safe_stop_home(f"目标过近 Z={z_mm:.1f}mm")
             return
 
         error_x = target["cx"] - TARGET_CX
         error_y = target["cy"] - TARGET_CY
-        if error_x < -CX_TOL:
-            # 右轮更快，车体沿左弧线前进，使画面偏左的目标向中心靠近。
-            self._start_base_pulse(ALIGN_TURN_SLOW_SPEED, ALIGN_TURN_FAST_SPEED, "TURN_LEFT")
+
+        # 每个脉冲停车并稳定后，先检查目标是否已同时进入蓝色抓取框。
+        if abs(error_x) <= CX_TOL and abs(error_y) <= CY_TOL:
+            self.target_center_stable_count += 1
+            self.message = (
+                f"目标已居中 {self.target_center_stable_count}/"
+                f"{TARGET_CENTER_STABLE_FRAMES}"
+            )
+            if self.target_center_stable_count >= TARGET_CENTER_STABLE_FRAMES:
+                if ENABLE_DEPTH_CHECK:
+                    self._set_state(DemoState.DEPTH_CHECK, "目标已居中，准备读取一次深度")
+                else:
+                    self._start_ready_pose()
             return
-        if error_x > CX_TOL:
-            self._start_base_pulse(ALIGN_TURN_FAST_SPEED, ALIGN_TURN_SLOW_SPEED, "TURN_RIGHT")
+
+        self.target_center_stable_count = 0
+
+        # cx 小于 320 时只允许后退；进入该分支后，回到 cx>=330 前不执行其它动作。
+        if target["cx"] < CX_RETREAT_TRIGGER:
+            self.turn_only_after_retreat = True
+        if self.turn_only_after_retreat and target["cx"] < CX_RETREAT_RELEASE:
+            self._start_base_pulse(
+                -RETREAT_SPEED,
+                -RETREAT_SPEED,
+                "RETREAT_STEP",
+                f"cx={target['cx']} until>={CX_RETREAT_RELEASE}",
+            )
+            self.align_turns_since_forward = 0
             return
-        if abs(error_y) > CY_TOL:
-            # 底盘不能独立修正图像垂直误差，固定演示场景中应由摆放高度保证。
-            self.message = f"等待固定高度 cy误差={error_y}px"
+
+        # 一旦进入手动控制，cx 回到远区也不重新开启循迹；仅保留同速前进步进。
+        if not self.turn_only_after_retreat and target["cx"] >= CX_TRACKING_LIMIT:
+            self._start_base_pulse(
+                ALIGN_FORWARD_SPEED,
+                ALIGN_FORWARD_SPEED,
+                "FORWARD_MANUAL",
+                f"cx={target['cx']} >={CX_TRACKING_LIMIT}",
+            )
+            self.align_turns_since_forward = 0
             return
-        if Z_GRAB_MIN_MM <= z_mm <= Z_GRAB_MAX_MM:
-            self._start_ready_pose()
+
+        # cx 位于 340~369 时，按三次原地转向加一次前进的节奏靠近。
+        turn_and_forward_zone = (
+            CX_TURN_FORWARD_LIMIT <= target["cx"] < CX_TRACKING_LIMIT
+        )
+        if (
+            not self.turn_only_after_retreat
+            and turn_and_forward_zone
+            and self.align_turns_since_forward >= ALIGN_TURNS_BEFORE_FORWARD
+        ):
+            self._start_base_pulse(
+                ALIGN_FORWARD_SPEED,
+                ALIGN_FORWARD_SPEED,
+                "FORWARD_STEP",
+                f"after_turns={self.align_turns_since_forward}",
+            )
+            self.align_turns_since_forward = 0
             return
-        if z_mm > Z_GRAB_MAX_MM:
-            # 每获得一轮新深度后最多前进一次，避免使用旧 Z 连续前冲。
-            if self.last_forward_depth_generation != self.depth_generation:
-                self.last_forward_depth_generation = self.depth_generation
-                self._start_base_pulse(ALIGN_FORWARD_SPEED, ALIGN_FORWARD_SPEED, "FORWARD")
-            else:
-                self.message = f"等待新深度 Z={z_mm:.1f}mm"
+
+        # 所有原地转向均按实车测试得到的 cy 规则决定方向：
+        # cy<240 左转，cy>240 右转。cx 只负责选择前进、后退或转向工作区间。
+        if error_y < 0:
+            self._start_base_pulse(
+                -ALIGN_ROTATE_SPEED,
+                ALIGN_ROTATE_SPEED,
+                "ROTATE_LEFT_BY_CY",
+                f"cx={target['cx']} cy={target['cy']} dy={error_y}",
+            )
+            self.align_turns_since_forward += 1
+            return
+        if error_y > 0:
+            self._start_base_pulse(
+                ALIGN_ROTATE_SPEED,
+                -ALIGN_ROTATE_SPEED,
+                "ROTATE_RIGHT_BY_CY",
+                f"cx={target['cx']} cy={target['cy']} dy={error_y}",
+            )
+            self.align_turns_since_forward += 1
+            return
+
+        # cy 恰好位于参考线但 cx 尚未满足完整蓝框时，保持停车并等待下一帧重测。
+        self.message = f"等待转向方向 cx={target['cx']} cy={target['cy']}"
 
     def update(self, target):
         """在每帧 RGB 后推进状态机，并处理网页发起的开始或复位请求。"""
@@ -682,7 +795,13 @@ class DemoController:
 
             if self.start_requested:
                 self.start_requested = False
-                self._begin_home_then_track()
+                if self.deadzone_test:
+                    self._begin_deadzone_test()
+                else:
+                    self._begin_home_then_track()
+                return
+
+            if self.state == DemoState.DEADZONE_TEST:
                 return
 
             if self.state == DemoState.HOME_WAIT:
@@ -694,6 +813,10 @@ class DemoController:
                 if target is None:
                     self.target_stable_count = 0
                     self.message = "循迹中，未发现目标"
+                elif target["cx"] >= CX_TRACKING_LIMIT:
+                    # 目标仍处于画面右侧远区时，保持红外循迹，不张开夹爪也不进入手动控制。
+                    self.target_stable_count = 0
+                    self.message = f"目标远区 cx={target['cx']}，保持循迹 PWM={TRACK_PWM}"
                 else:
                     self.target_stable_count += 1
                     self.message = f"目标稳定 {self.target_stable_count}/{TARGET_STABLE_FRAMES}"
@@ -701,7 +824,11 @@ class DemoController:
                         self._open_gripper()
                 return
 
-            if self.state in (DemoState.TARGET_DETECTED, DemoState.FINE_ALIGN):
+            if self.state in (
+                DemoState.TARGET_DETECTED,
+                DemoState.FINE_ALIGN,
+                DemoState.DEPTH_CHECK,
+            ):
                 if target is None:
                     if self.target_lost_since is None:
                         self.target_lost_since = now
@@ -709,6 +836,11 @@ class DemoController:
                         self._safe_stop_home("目标丢失")
                     return
                 self.target_lost_since = None
+
+            if self.state == DemoState.TARGET_DETECTED:
+                if now >= self.state_deadline:
+                    self._stop_tracking_for_fine_align()
+                return
 
             if self.state == DemoState.FINE_ALIGN:
                 if self._finish_pulse_if_due(now):
@@ -749,8 +881,13 @@ def draw_overlay(frame, target, snapshot):
     lines = [
         f"state={snapshot['state']}",
         snapshot["message"],
-        f"base={snapshot['base_action']} align={snapshot['align_pulses']}/{MAX_ALIGN_PULSES}",
+        f"base={snapshot['base_action']} align={snapshot['align_pulses']} "
+        f"turns={snapshot['align_turns_since_forward']}/{ALIGN_TURNS_BEFORE_FORWARD}",
     ]
+    if snapshot["state"] == DemoState.DEADZONE_TEST.value:
+        lines.append(
+            f"deadzone pwm={snapshot['deadzone_pwm']} phase={snapshot['deadzone_phase']}"
+        )
 
     base_fields = {}
     for item in snapshot["base_status"].split(","):
@@ -759,7 +896,8 @@ def draw_overlay(frame, target, snapshot):
             base_fields[key] = value
     if base_fields:
         lines.append(
-            f"line={base_fields.get('LINE', '----')} act={base_fields.get('ACT', '--')}"
+            f"line={base_fields.get('LINE', '----')} act={base_fields.get('ACT', '--')} "
+            f"track_pwm={base_fields.get('LINEPWM', '--')}"
         )
         lines.append(
             f"pwm R/L={base_fields.get('PWM_R', '--')}/{base_fields.get('PWM_L', '--')} "
@@ -771,13 +909,15 @@ def draw_overlay(frame, target, snapshot):
 
     depth = snapshot["depth"]
     if depth is None:
-        lines.append("Z=waiting")
+        lines.append("DEPTH=OFF" if not ENABLE_DEPTH_CHECK else "X/Y=waiting")
     elif depth.get("ok"):
         lines.append(
-            f"Z={depth['z']:.1f}mm valid={depth['valid']} samples={snapshot['depth_samples']}"
+            f"X={depth.get('robot_x', depth['z']):.1f}mm "
+            f"Y={depth.get('robot_y', depth['x']):.1f}mm "
+            f"valid={depth['valid']} samples={snapshot['depth_samples']}"
         )
     else:
-        lines.append(f"Z=-- {depth.get('error', 'DEPTH_FAILED')}")
+        lines.append(f"X/Y=-- {depth.get('error', 'DEPTH_FAILED')}")
 
     if target is None:
         lines.append("NO_TARGET")
@@ -787,7 +927,8 @@ def draw_overlay(frame, target, snapshot):
         cv2.circle(frame, (target["cx"], target["cy"]), 5, (0, 0, 255), -1)
         lines.append(
             f"cx={target['cx']} cy={target['cy']} "
-            f"err=({target['cx'] - TARGET_CX},{target['cy'] - TARGET_CY})"
+            f"image_dx={target['cx'] - TARGET_CX}px "
+            f"image_dy={target['cy'] - TARGET_CY}px"
         )
 
     for index, text in enumerate(lines):
@@ -1008,11 +1149,28 @@ def main():
     parser.add_argument("--arm-port", default=DEFAULT_ARM_PORT)
     parser.add_argument("--base-port", default=DEFAULT_BASE_PORT)
     parser.add_argument("--port", type=int, default=SERVER_PORT, help="网页服务端口")
+    parser.add_argument(
+        "--deadzone-test",
+        action="store_true",
+        help="网页 Start 后执行带载 PWM 死区测试，不控制机械臂",
+    )
+    parser.add_argument(
+        "--deadzone-pwm",
+        type=int,
+        default=DEADZONE_TEST_PWM,
+        help=f"死区固定测试 PWM，默认 {DEADZONE_TEST_PWM}",
+    )
     args = parser.parse_args()
+    if not 0 <= args.deadzone_pwm <= 99:
+        parser.error("--deadzone-pwm 必须在 0~99 之间")
 
     stop_event = threading.Event()
     links = RobotLinks(args.arm_port, args.base_port)
-    controller = DemoController(links)
+    controller = DemoController(
+        links,
+        deadzone_test=args.deadzone_test,
+        deadzone_pwm=args.deadzone_pwm,
+    )
     publisher = VideoPublisher()
     context = AppContext(controller, publisher, stop_event)
 
@@ -1022,6 +1180,11 @@ def main():
     ip = get_local_ip()
     print(f"Open browser: http://{ip}:{args.port}", flush=True)
     print(f"ARM={args.arm_port} BASE={args.base_port} baud={BAUDRATE}", flush=True)
+    if args.deadzone_test:
+        print(
+            f"Mode=deadzone_test: hold equal wheel PWM {args.deadzone_pwm} until Reset",
+            flush=True,
+        )
     server = ThreadingHTTPServer(("0.0.0.0", args.port), create_handler(context))
     try:
         server.serve_forever()
