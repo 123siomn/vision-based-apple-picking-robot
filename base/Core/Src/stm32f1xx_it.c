@@ -23,7 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "motor.h"
-#include "pid.h"
+#include "base_control.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,11 +42,7 @@ short Encode1Count = 0;       /* 电机 1 编码器计数 */
 short Encode2Count = 0;       /* 电机 2 编码器计数 */
 float Motor1Speed = 0.0f;     /* 电机 1 当前速度 */
 float Motor2Speed = 0.0f;     /* 电机 2 当前速度 */
-float Mileage = 0.0f;         /* 底盘累计里程，单位沿用旧工程估算值 */
-uint16_t TimerCount = 0U;     /* TIM1 周期节拍计数 */
 
-extern tPid pidMotor1Speed;
-extern tPid pidMotor2Speed;
 
 /* USER CODE END PM */
 
@@ -269,37 +265,4 @@ void USART1_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-/**
-  * @brief  定时器周期回调函数
-  * @note   TIM1 以约 500Hz 溢出；每 10ms 计算编码器速度，每 20ms 执行一次电机 PID 闭环。
-  * @param  htim: 触发回调的定时器句柄
-  * @retval 无
-  */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  if(htim == &htim1)
-  {
-    TimerCount++;
-
-    if((TimerCount % 5U) == 0U)
-    {
-      Encode1Count = -(short)__HAL_TIM_GET_COUNTER(&htim4);
-      Encode2Count = (short)__HAL_TIM_GET_COUNTER(&htim2);
-      __HAL_TIM_SET_COUNTER(&htim4, 0);
-      __HAL_TIM_SET_COUNTER(&htim2, 0);
-
-      /* 沿用旧底盘换算关系：编码器计数 -> 轮速估算值。 */
-      Motor1Speed = (float)Encode1Count * 100.0f / 9.6f / 11.0f / 4.0f;
-      Motor2Speed = (float)Encode2Count * 100.0f / 9.6f / 11.0f / 4.0f;
-    }
-
-    if((TimerCount % 10U) == 0U)
-    {
-      /* 当前底盘使用开环 PWM，保留里程估算但不执行 PID，避免覆盖循迹输出。 */
-      Mileage += 0.02f * Motor1Speed * 22.0f;
-      TimerCount = 0U;
-    }
-  }
-}
-
 /* USER CODE END 1 */

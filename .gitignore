@@ -37,3 +37,6 @@ raspberrypi/**/*.log
 raspberrypi/depth_helper/depth_xyz_reader
 raspberrypi/depth_helper/build/
 raspberrypi/.venv/
+raspberrypi/vision/output/
+raspberrypi/tools/calibration/output/
+debug_images/

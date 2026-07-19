@@ -1,4 +1,4 @@
-"""固定演示场景下的循迹、视觉、深度与一次抓取控制器。"""
+"""移动机器人循迹、视觉、深度与抓取控制器。"""
 
 from collections import deque
 from enum import Enum
@@ -20,7 +20,7 @@ SERIAL_DIR = RASPBERRYPI_DIR / "serial"
 if str(SERIAL_DIR) not in sys.path:
     sys.path.insert(0, str(SERIAL_DIR))
 
-from robot_uart_frame import build_frame, open_serial, parse_frame, read_line, send_frame
+from robot_protocol import build_frame, open_serial, parse_frame, read_line, send_frame
 
 
 # ------------------------------ 可标定参数 ------------------------------
@@ -78,12 +78,8 @@ CAMERA_REOPEN_TIMEOUT_SEC = 12.0
 
 # MOVE 协议接收 -5.0~5.0 的速度值，STM32 再映射到 -99~99 开环 PWM。
 # 正常循迹使用 PWM 50。发现视觉目标后切换到 cx 分段闭环。
-TRACK_PWM = 50
 # cx 在 340~369 时，原地转向三次后以前进步进靠近目标，均约 PWM 55。
-ALIGN_ROTATE_SPEED = 2.78
-ALIGN_FORWARD_SPEED = 2.78
 # cx 小于 320 时优先后退恢复，约 PWM 70。
-RETREAT_SPEED = 3.54
 # 视觉闭环中所有前进、后退和原地转向动作统一使用 0.3 秒脉冲。
 ALIGN_PULSE_MS = 300
 ALIGN_SETTLE_SEC = 0.35
@@ -509,10 +505,9 @@ class DemoController:
     def _start_tracking(self):
         """进入正常红外循迹阶段。"""
         try:
-            self.links.base_track_pwm(TRACK_PWM)
             self.links.base_track(True)
             self.last_base_action = "TRACK_ON"
-            self._set_state(DemoState.LINE_TRACK, f"循迹中 PWM={TRACK_PWM}")
+            self._set_state(DemoState.LINE_TRACK, "PI 循迹中")
         except Exception as exc:
             self._safe_stop_home(f"无法启动循迹：{exc}")
 
@@ -568,10 +563,10 @@ class DemoController:
 
         self._safe_stop_home(f"固定抓取距离不匹配 X={depth['robot_x']:.1f}mm")
 
-    def _start_base_pulse(self, left_speed, right_speed, action, detail=""):
-        """执行一次有限时长的开环底盘脉冲，结束后必定 STOP。"""
+    def _start_base_pulse(self, command, action, detail=""):
+        """执行一次固定 PI 底盘动作脉冲，结束后必定 STOP 并重新识别。"""
         try:
-            self.links.base_move(left_speed, right_speed)
+            self.links._send("BASE", command)
             self.last_base_action = action
             self.pulse_stop_at = time.monotonic() + ALIGN_PULSE_MS / 1000.0
             self.align_pulse_count += 1
@@ -721,8 +716,7 @@ class DemoController:
             self.turn_only_after_retreat = True
         if self.turn_only_after_retreat and target["cx"] < CX_RETREAT_RELEASE:
             self._start_base_pulse(
-                -RETREAT_SPEED,
-                -RETREAT_SPEED,
+                "BACKWARD",
                 "RETREAT_STEP",
                 f"cx={target['cx']} until>={CX_RETREAT_RELEASE}",
             )
@@ -732,8 +726,7 @@ class DemoController:
         # 一旦进入手动控制，cx 回到远区也不重新开启循迹；仅保留同速前进步进。
         if not self.turn_only_after_retreat and target["cx"] >= CX_TRACKING_LIMIT:
             self._start_base_pulse(
-                ALIGN_FORWARD_SPEED,
-                ALIGN_FORWARD_SPEED,
+                "FORWARD",
                 "FORWARD_MANUAL",
                 f"cx={target['cx']} >={CX_TRACKING_LIMIT}",
             )
@@ -750,8 +743,7 @@ class DemoController:
             and self.align_turns_since_forward >= ALIGN_TURNS_BEFORE_FORWARD
         ):
             self._start_base_pulse(
-                ALIGN_FORWARD_SPEED,
-                ALIGN_FORWARD_SPEED,
+                "FORWARD",
                 "FORWARD_STEP",
                 f"after_turns={self.align_turns_since_forward}",
             )
@@ -762,8 +754,7 @@ class DemoController:
         # cy<240 左转，cy>240 右转。cx 只负责选择前进、后退或转向工作区间。
         if error_y < 0:
             self._start_base_pulse(
-                -ALIGN_ROTATE_SPEED,
-                ALIGN_ROTATE_SPEED,
+                "ROTATE_LEFT",
                 "ROTATE_LEFT_BY_CY",
                 f"cx={target['cx']} cy={target['cy']} dy={error_y}",
             )
@@ -771,8 +762,7 @@ class DemoController:
             return
         if error_y > 0:
             self._start_base_pulse(
-                ALIGN_ROTATE_SPEED,
-                -ALIGN_ROTATE_SPEED,
+                "ROTATE_RIGHT",
                 "ROTATE_RIGHT_BY_CY",
                 f"cx={target['cx']} cy={target['cy']} dy={error_y}",
             )
@@ -816,7 +806,7 @@ class DemoController:
                 elif target["cx"] >= CX_TRACKING_LIMIT:
                     # 目标仍处于画面右侧远区时，保持红外循迹，不张开夹爪也不进入手动控制。
                     self.target_stable_count = 0
-                    self.message = f"目标远区 cx={target['cx']}，保持循迹 PWM={TRACK_PWM}"
+                    self.message = f"目标远区 cx={target['cx']}，保持 PI 循迹"
                 else:
                     self.target_stable_count += 1
                     self.message = f"目标稳定 {self.target_stable_count}/{TARGET_STABLE_FRAMES}"
@@ -897,10 +887,10 @@ def draw_overlay(frame, target, snapshot):
     if base_fields:
         lines.append(
             f"line={base_fields.get('LINE', '----')} act={base_fields.get('ACT', '--')} "
-            f"track_pwm={base_fields.get('LINEPWM', '--')}"
+            f"line_act={base_fields.get('LINEACT', '--')}"
         )
         lines.append(
-            f"pwm R/L={base_fields.get('PWM_R', '--')}/{base_fields.get('PWM_L', '--')} "
+            f"target spd R/L={base_fields.get('TGTSPD_R', '--')}/{base_fields.get('TGTSPD_L', '--')} "
             f"enc R/L={base_fields.get('ENC_R', '--')}/{base_fields.get('ENC_L', '--')}"
         )
         lines.append(
@@ -1034,7 +1024,7 @@ def create_handler(context):
                     "main{display:flex;flex-direction:column;align-items:center;padding:16px;gap:12px;}"
                     "img{max-width:100%;height:auto;border:1px solid #444;}"
                     "button{padding:9px 16px;margin:0 4px;}</style></head><body><main>"
-                    "<h2>Apple Picking Demo</h2><img src='/stream.mjpg' alt='live stream'>"
+                    "<h2>Robot Controller</h2><img src='/stream.mjpg' alt='live stream'>"
                     "<div><button onclick=\"fetch('/start',{method:'POST'})\">Start</button>"
                     "<button onclick=\"fetch('/reset',{method:'POST'})\">Reset</button></div>"
                     "</main></body></html>"

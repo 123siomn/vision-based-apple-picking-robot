@@ -670,7 +670,7 @@ I (.\STM32F10x_FWLib\inc\stm32f10x_spi.h)(0x618CB81A)
 I (.\STM32F10x_FWLib\inc\stm32f10x_tim.h)(0x618CB81A)
 I (.\STM32F10x_FWLib\inc\stm32f10x_usart.h)(0x618CB81A)
 I (.\STM32F10x_FWLib\inc\misc.h)(0x618CB81A)
-F (.\USER\main.c)(0x6A4CF9ED)(-c --cpu Cortex-M3 -g -O0 --apcs=interwork -I .\CORE -I .\STM32F10x_FWLib\inc -I .\USER-I.\RTE\_Target_1-ID:\keil5mdk\ARM\CMSIS\5.7.0\CMSIS\Core\Include-ID:\keil5mdk\Keil\STM32F1xx_DFP\2.3.0\Device\Include-D__UVISION_VERSION="533" -D_RTE_ -DSTM32F10X_MD -D_RTE_ -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER-o .\obj\main.o --omf_browse .\obj\main.crf --depend .\obj\main.d)
+F (.\USER\main.c)(0x6A52428C)(-c --cpu Cortex-M3 -g -O0 --apcs=interwork -I .\CORE -I .\STM32F10x_FWLib\inc -I .\USER-I.\RTE\_Target_1-ID:\keil5mdk\ARM\CMSIS\5.7.0\CMSIS\Core\Include-ID:\keil5mdk\Keil\STM32F1xx_DFP\2.3.0\Device\Include-D__UVISION_VERSION="533" -D_RTE_ -DSTM32F10X_MD -D_RTE_ -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER-o .\obj\main.o --omf_browse .\obj\main.crf --depend .\obj\main.d)
 I (USER\include.h)(0x6A4BAEBB)
 I (USER\stm32f10x.h)(0x618CB81A)
 I (.\CORE\core_cm3.h)(0x618CB81B)
@@ -803,7 +803,7 @@ I (.\STM32F10x_FWLib\inc\stm32f10x_tim.h)(0x618CB81A)
 I (.\STM32F10x_FWLib\inc\stm32f10x_usart.h)(0x618CB81A)
 I (.\STM32F10x_FWLib\inc\stm32f10x_wwdg.h)(0x618CB81A)
 I (.\STM32F10x_FWLib\inc\misc.h)(0x618CB81A)
-F (.\USER\PCMsg.c)(0x6A4BADD1)(-c --cpu Cortex-M3 -g -O0 --apcs=interwork -I .\CORE -I .\STM32F10x_FWLib\inc -I .\USER-I.\RTE\_Target_1-ID:\keil5mdk\ARM\CMSIS\5.7.0\CMSIS\Core\Include-ID:\keil5mdk\Keil\STM32F1xx_DFP\2.3.0\Device\Include-D__UVISION_VERSION="533" -D_RTE_ -DSTM32F10X_MD -D_RTE_ -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER-o .\obj\pcmsg.o --omf_browse .\obj\pcmsg.crf --depend .\obj\pcmsg.d)
+F (.\USER\PCMsg.c)(0x6A52428C)(-c --cpu Cortex-M3 -g -O0 --apcs=interwork -I .\CORE -I .\STM32F10x_FWLib\inc -I .\USER-I.\RTE\_Target_1-ID:\keil5mdk\ARM\CMSIS\5.7.0\CMSIS\Core\Include-ID:\keil5mdk\Keil\STM32F1xx_DFP\2.3.0\Device\Include-D__UVISION_VERSION="533" -D_RTE_ -DSTM32F10X_MD -D_RTE_ -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER-o .\obj\pcmsg.o --omf_browse .\obj\pcmsg.crf --depend .\obj\pcmsg.d)
 I (USER\include.h)(0x6A4BAEBB)
 I (USER\stm32f10x.h)(0x618CB81A)
 I (.\CORE\core_cm3.h)(0x618CB81B)
@@ -839,7 +839,7 @@ I (USER\PWM.h)(0x618CB81A)
 I (USER\PCMsg.h)(0x6A4BADD1)
 I (USER\ArmControl.h)(0x6A4BAE68)
 I (USER\ArmProtocol.h)(0x6A4BAAD2)
-F (.\USER\App.c)(0x6A4BAEBB)(-c --cpu Cortex-M3 -g -O0 --apcs=interwork -I .\CORE -I .\STM32F10x_FWLib\inc -I .\USER-I.\RTE\_Target_1-ID:\keil5mdk\ARM\CMSIS\5.7.0\CMSIS\Core\Include-ID:\keil5mdk\Keil\STM32F1xx_DFP\2.3.0\Device\Include-D__UVISION_VERSION="533" -D_RTE_ -DSTM32F10X_MD -D_RTE_ -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER-o .\obj\app.o --omf_browse .\obj\app.crf --depend .\obj\app.d)
+F (.\USER\App.c)(0x6A52428C)(-c --cpu Cortex-M3 -g -O0 --apcs=interwork -I .\CORE -I .\STM32F10x_FWLib\inc -I .\USER-I.\RTE\_Target_1-ID:\keil5mdk\ARM\CMSIS\5.7.0\CMSIS\Core\Include-ID:\keil5mdk\Keil\STM32F1xx_DFP\2.3.0\Device\Include-D__UVISION_VERSION="533" -D_RTE_ -DSTM32F10X_MD -D_RTE_ -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER-o .\obj\app.o --omf_browse .\obj\app.crf --depend .\obj\app.d)
 I (USER\include.h)(0x6A4BAEBB)
 I (USER\stm32f10x.h)(0x618CB81A)
 I (.\CORE\core_cm3.h)(0x618CB81B)
@@ -875,7 +875,7 @@ I (USER\PWM.h)(0x618CB81A)
 I (USER\PCMsg.h)(0x6A4BADD1)
 I (USER\ArmControl.h)(0x6A4BAE68)
 I (USER\ArmProtocol.h)(0x6A4BAAD2)
-F (.\USER\ArmControl.c)(0x6A4BB448)(-c --cpu Cortex-M3 -g -O0 --apcs=interwork -I .\CORE -I .\STM32F10x_FWLib\inc -I .\USER-I.\RTE\_Target_1-ID:\keil5mdk\ARM\CMSIS\5.7.0\CMSIS\Core\Include-ID:\keil5mdk\Keil\STM32F1xx_DFP\2.3.0\Device\Include-D__UVISION_VERSION="533" -D_RTE_ -DSTM32F10X_MD -D_RTE_ -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER-o .\obj\armcontrol.o --omf_browse .\obj\armcontrol.crf --depend .\obj\armcontrol.d)
+F (.\USER\ArmControl.c)(0x6A52428C)(-c --cpu Cortex-M3 -g -O0 --apcs=interwork -I .\CORE -I .\STM32F10x_FWLib\inc -I .\USER-I.\RTE\_Target_1-ID:\keil5mdk\ARM\CMSIS\5.7.0\CMSIS\Core\Include-ID:\keil5mdk\Keil\STM32F1xx_DFP\2.3.0\Device\Include-D__UVISION_VERSION="533" -D_RTE_ -DSTM32F10X_MD -D_RTE_ -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER-o .\obj\armcontrol.o --omf_browse .\obj\armcontrol.crf --depend .\obj\armcontrol.d)
 I (USER\include.h)(0x6A4BAEBB)
 I (USER\stm32f10x.h)(0x618CB81A)
 I (.\CORE\core_cm3.h)(0x618CB81B)
@@ -911,7 +911,7 @@ I (USER\PWM.h)(0x618CB81A)
 I (USER\PCMsg.h)(0x6A4BADD1)
 I (USER\ArmControl.h)(0x6A4BAE68)
 I (USER\ArmProtocol.h)(0x6A4BAAD2)
-F (.\USER\ArmProtocol.c)(0x6A4BAE91)(-c --cpu Cortex-M3 -g -O0 --apcs=interwork -I .\CORE -I .\STM32F10x_FWLib\inc -I .\USER-I.\RTE\_Target_1-ID:\keil5mdk\ARM\CMSIS\5.7.0\CMSIS\Core\Include-ID:\keil5mdk\Keil\STM32F1xx_DFP\2.3.0\Device\Include-D__UVISION_VERSION="533" -D_RTE_ -DSTM32F10X_MD -D_RTE_ -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER-o .\obj\armprotocol.o --omf_browse .\obj\armprotocol.crf --depend .\obj\armprotocol.d)
+F (.\USER\ArmProtocol.c)(0x6A562134)(-c --cpu Cortex-M3 -g -O0 --apcs=interwork -I .\CORE -I .\STM32F10x_FWLib\inc -I .\USER-I.\RTE\_Target_1-ID:\keil5mdk\ARM\CMSIS\5.7.0\CMSIS\Core\Include-ID:\keil5mdk\Keil\STM32F1xx_DFP\2.3.0\Device\Include-D__UVISION_VERSION="533" -D_RTE_ -DSTM32F10X_MD -D_RTE_ -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER-o .\obj\armprotocol.o --omf_browse .\obj\armprotocol.crf --depend .\obj\armprotocol.d)
 I (USER\include.h)(0x6A4BAEBB)
 I (USER\stm32f10x.h)(0x618CB81A)
 I (.\CORE\core_cm3.h)(0x618CB81B)
@@ -949,3 +949,4 @@ I (USER\ArmControl.h)(0x6A4BAE68)
 I (USER\ArmProtocol.h)(0x6A4BAAD2)
 I (D:\keil5mdk\ARM\ARMCC\include\stdio.h)(0x5E8E2EB2)
 I (D:\keil5mdk\ARM\ARMCC\include\string.h)(0x5E8E2EB2)
+I (D:\keil5mdk\ARM\ARMCC\include\stdlib.h)(0x5E8E2EB2)

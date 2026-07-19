@@ -1,5 +1,7 @@
 #include "base_control.h"
 #include "motor.h"
+#include "tim.h"
+#include "pi_speed.h"
 #include "HC_SR04.h"
 #include "usart.h"
 #include <stdio.h>
@@ -9,15 +11,42 @@
 /* 临时循迹诊断开关：1 时通过 USART1 周期输出传感器、PWM、编码器和速度。 */
 #define BASE_LINE_DEBUG_ENABLE        0u
 #define BASE_LINE_DEBUG_INTERVAL_MS   200u
+/* 独立 PI 初始参数，仅用于轮速测试模式，后续通过网页实测后再调大或调小。 */
+#define BASE_CONTROL_PI_KP                 5.0f
+#define BASE_CONTROL_PI_KI                 0.5f
+#define BASE_CONTROL_PI_INTEGRAL_MAX       60.0f
+#define BASE_CONTROL_PI_CORRECTION_LIMIT   30
+#define BASE_CONTROL_SPEED_FILTER_ALPHA    0.35f
+#define BASE_CONTROL_FF_MIN_SPEED           1.90f
+#define BASE_CONTROL_FF_MID_SPEED           3.00f
+#define BASE_CONTROL_FF_MAX_SPEED           5.00f
+#define BASE_CONTROL_FF_MID_PWM            60
+#define BASE_CONTROL_TRACK_SPEED            3.10f
+#define BASE_CONTROL_TRACK_TURN_SPEED       3.10f
+#define BASE_CONTROL_FORWARD_SPEED          2.73f
+#define BASE_CONTROL_BACKWARD_SPEED         3.51f
+#define BASE_CONTROL_ROTATE_SPEED           2.73f
 
 static BaseControl_State_t g_eBaseControlState = BASE_STATE_IDLE;
+static BaseControl_Action_t g_eBaseControlAction = BASE_ACTION_STOP;
 static uint8_t g_ucBaseSafetyEnable = 0u;
+#if (BASE_CONTROL_ENABLE_ULTRASONIC_SAFETY != 0u)
 static uint32_t g_ulBaseSafetyLastTick = 0u;
+#endif
 static uint32_t g_ulBaseLineTrackLastTick = 0u;
+#if (BASE_LINE_DEBUG_ENABLE != 0u)
 static uint32_t g_ulBaseLineDebugLastTick = 0u;
+#endif
 static int16_t g_iBaseLineBasePwm = 50;
+static uint8_t g_ucBasePiEnable = 0u;
+static uint8_t g_ucBasePiInitialized = 0u;
+static PiSpeedController_t g_tBasePiRight;
+static PiSpeedController_t g_tBasePiLeft;
+static uint32_t g_ulBaseSpeedLastTick = 0u;
+static uint32_t g_ulBasePiLastTick = 0u;
+static uint8_t g_ucBaseSpeedFilterReady = 0u;
 
-/* 编码器与速度由定时中断更新，仅用于当前循迹诊断输出，不参与控制。 */
+/* 编码器与速度由 BaseControl_Task 周期更新，STATUS 只读取并回传。 */
 extern short Encode1Count;
 extern short Encode2Count;
 extern float Motor1Speed;
@@ -42,11 +71,182 @@ static int16_t BaseControl_LimitPwm(int16_t pwm)
 }
 
 /**
+ * @brief  限制 PI 目标速度到允许范围。
+ * @param  speed: 待限制的目标速度
+ * @return 限幅后的目标速度
+ */
+static float BaseControl_LimitPiTargetSpeed(float speed)
+{
+	if(speed > BASE_CONTROL_PI_MAX_TARGET_SPEED)
+	{
+		return BASE_CONTROL_PI_MAX_TARGET_SPEED;
+	}
+	if(speed < -BASE_CONTROL_PI_MAX_TARGET_SPEED)
+	{
+		return -BASE_CONTROL_PI_MAX_TARGET_SPEED;
+	}
+	return speed;
+}
+
+/**
+ * @brief  根据空载实测曲线，将目标轮速换算为基础 PWM。
+ * @param  targetSpeed: 单轮目标速度，单位与 STATUS 中 SPD 相同
+ * @return 基础 PWM；PI 输出将在此基础上做正负小幅修正
+ */
+static int16_t BaseControl_SpeedToFeedforwardPwm(float targetSpeed)
+{
+	float magnitude;
+	float pwm;
+	int16_t signedPwm;
+
+	if(targetSpeed == 0.0f)
+	{
+		return 0;
+	}
+
+	magnitude = (targetSpeed >= 0.0f) ? targetSpeed : -targetSpeed;
+	if(magnitude <= BASE_CONTROL_FF_MIN_SPEED)
+	{
+		pwm = (float)BASE_CONTROL_PI_MIN_ACTIVE_PWM;
+	}
+	else if(magnitude <= BASE_CONTROL_FF_MID_SPEED)
+	{
+		pwm = (float)BASE_CONTROL_PI_MIN_ACTIVE_PWM +
+			(magnitude - BASE_CONTROL_FF_MIN_SPEED) *
+			((float)BASE_CONTROL_FF_MID_PWM - (float)BASE_CONTROL_PI_MIN_ACTIVE_PWM) /
+			(BASE_CONTROL_FF_MID_SPEED - BASE_CONTROL_FF_MIN_SPEED);
+	}
+	else
+	{
+		pwm = (float)BASE_CONTROL_FF_MID_PWM +
+			(magnitude - BASE_CONTROL_FF_MID_SPEED) *
+			((float)BASE_CONTROL_MAX_PWM - (float)BASE_CONTROL_FF_MID_PWM) /
+			(BASE_CONTROL_FF_MAX_SPEED - BASE_CONTROL_FF_MID_SPEED);
+	}
+
+	signedPwm = BaseControl_LimitPwm((int16_t)(pwm + 0.5f));
+	return (targetSpeed >= 0.0f) ? signedPwm : (int16_t)(-signedPwm);
+}
+/**
+ * @brief  首次使用时初始化左右轮独立 PI 控制器。
+ * @param  None
+ * @return None
+ */
+static void BaseControl_InitPiIfNeeded(void)
+{
+	if(g_ucBasePiInitialized != 0u)
+	{
+		return;
+	}
+
+	PiSpeed_Init(&g_tBasePiRight, BASE_CONTROL_PI_KP, BASE_CONTROL_PI_KI,
+		BASE_CONTROL_PI_INTEGRAL_MAX, BASE_CONTROL_PI_CORRECTION_LIMIT, 0);
+	PiSpeed_Init(&g_tBasePiLeft, BASE_CONTROL_PI_KP, BASE_CONTROL_PI_KI,
+		BASE_CONTROL_PI_INTEGRAL_MAX, BASE_CONTROL_PI_CORRECTION_LIMIT, 0);
+	g_ucBasePiInitialized = 1u;
+}
+
+/**
+ * @brief  清空独立 PI 模式的目标、积分和输出记录。
+ * @param  None
+ * @return None
+ */
+static void BaseControl_ResetPiState(void)
+{
+	BaseControl_InitPiIfNeeded();
+	PiSpeed_Reset(&g_tBasePiRight);
+	PiSpeed_Reset(&g_tBasePiLeft);
+	/* 下次采样直接使用最新编码器速度，避免模式切换沿用旧滤波值。 */
+	g_ucBaseSpeedFilterReady = 0u;
+}
+
+/**
+ * @brief  退出独立 PI 模式，让开环、循迹或停车命令独占电机 PWM。
+ * @param  None
+ * @return None
+ */
+static void BaseControl_ExitPiMode(void)
+{
+	g_ucBasePiEnable = 0u;
+	BaseControl_ResetPiState();
+}
+
+/**
+ * @brief  在不改变控制模式的情况下直接写入电机 PWM。
+ * @param  rightPwm: 右轮 PWM
+ * @param  leftPwm: 左轮 PWM
+ * @return None
+ */
+/**
+ * @brief  在保持当前 PI 模式的情况下更新左右轮目标速度。
+ * @param  rightTargetSpeed: 右轮目标速度
+ * @param  leftTargetSpeed: 左轮目标速度
+ * @return None
+ */
+static void BaseControl_SetPiTargetsInternal(float rightTargetSpeed, float leftTargetSpeed)
+{
+	BaseControl_InitPiIfNeeded();
+	PiSpeed_SetTarget(&g_tBasePiRight, BaseControl_LimitPiTargetSpeed(rightTargetSpeed));
+	PiSpeed_SetTarget(&g_tBasePiLeft, BaseControl_LimitPiTargetSpeed(leftTargetSpeed));
+}
+static void BaseControl_ApplyPwm(int16_t rightPwm, int16_t leftPwm)
+{
+	Motor_Set((int)BaseControl_LimitPwm(rightPwm), (int)BaseControl_LimitPwm(leftPwm));
+}
+
+/**
+ * @brief  在主循环中周期读取编码器并更新 PI，避免高速中断影响 USART1 通信。
+ * @param  None
+ * @return None
+ */
+static void BaseControl_UpdateEncoderFeedback(void)
+{
+	uint32_t now = HAL_GetTick();
+	uint32_t speedPeriodMs;
+	uint32_t piPeriodMs;
+	float rawRightSpeed;
+	float rawLeftSpeed;
+
+	if((now - g_ulBaseSpeedLastTick) < 10u)
+	{
+		return;
+	}
+	speedPeriodMs = now - g_ulBaseSpeedLastTick;
+	g_ulBaseSpeedLastTick = now;
+
+	Encode1Count = -(short)__HAL_TIM_GET_COUNTER(&htim4);
+	Encode2Count = (short)__HAL_TIM_GET_COUNTER(&htim2);
+	__HAL_TIM_SET_COUNTER(&htim4, 0);
+	__HAL_TIM_SET_COUNTER(&htim2, 0);
+
+	/* 按实际采样时间换算轮速，避免串口回复占用主循环时产生速度误差。 */
+	/* 10 ms 窗口脉冲数较少，采用轻量一阶滤波减少编码器量化抖动。 */
+	rawRightSpeed = (float)Encode1Count * 1000.0f / (float)speedPeriodMs / 9.6f / 11.0f / 4.0f;
+	rawLeftSpeed = (float)Encode2Count * 1000.0f / (float)speedPeriodMs / 9.6f / 11.0f / 4.0f;
+	if(g_ucBaseSpeedFilterReady == 0u)
+	{
+		Motor1Speed = rawRightSpeed;
+		Motor2Speed = rawLeftSpeed;
+		g_ucBaseSpeedFilterReady = 1u;
+	}
+	else
+	{
+		Motor1Speed += BASE_CONTROL_SPEED_FILTER_ALPHA * (rawRightSpeed - Motor1Speed);
+		Motor2Speed += BASE_CONTROL_SPEED_FILTER_ALPHA * (rawLeftSpeed - Motor2Speed);
+	}
+
+	if((now - g_ulBasePiLastTick) >= 20u)
+	{
+		piPeriodMs = now - g_ulBasePiLastTick;
+		g_ulBasePiLastTick = now;
+		BaseControl_UpdateWheelPi(Motor1Speed, Motor2Speed, (float)piPeriodMs / 1000.0f);
+	}
+}
+/**
  * @brief  限制树莓派 MOVE 指令中的速度数值范围。
  * @param  speed: 树莓派协议中的单轮数值
  * @return 限幅后的数值，范围为 -BASE_CONTROL_MAX_SPEED~BASE_CONTROL_MAX_SPEED
- */
-static float BaseControl_LimitSpeed(float speed)
+ */static float BaseControl_LimitSpeed(float speed)
 {
 	if(speed > BASE_CONTROL_MAX_SPEED)
 	{
@@ -183,6 +383,8 @@ static void BaseControl_PrintLineDebug(const uint8_t line[4], const char *action
 static void BaseControl_LineTrackTask(void)
 {
 	uint8_t line[4];
+	float rightTargetSpeed;
+	float leftTargetSpeed;
 	int16_t rightPwm;
 	int16_t leftPwm;
 	const char *action = "STRAIGHT";
@@ -195,38 +397,34 @@ static void BaseControl_LineTrackTask(void)
 	g_ulBaseLineTrackLastTick = now;
 
 	BaseControl_ReadLineState(line);
-	rightPwm = g_iBaseLineBasePwm;
-	leftPwm = g_iBaseLineBasePwm;
+	rightTargetSpeed = BASE_CONTROL_TRACK_SPEED;
+	leftTargetSpeed = BASE_CONTROL_TRACK_SPEED;
 
-	/* 实测规则：0=白底板，1=黑线；1号只读取不参与控制。 */
-	/* 1/2号在右侧，2号检测黑线时向右修正；3/4号在左侧，3/4号检测黑线时向左修正。 */
-	/* 临时强差速诊断：2 号黑线时右轮停止；3/4 号黑线时左轮停止。 */
+	/* 0=白底板，1=黑线；1号传感器只读取，不参与控制。 */
 	if(line[1] != 0u)
 	{
-		rightPwm = 0;
-		leftPwm = g_iBaseLineBasePwm;
+		rightTargetSpeed = 0.0f;
+		leftTargetSpeed = BASE_CONTROL_TRACK_TURN_SPEED;
 		action = "RIGHT_STOP";
 	}
 	else if((line[2] != 0u) || (line[3] != 0u))
 	{
-		rightPwm = g_iBaseLineBasePwm;
-		leftPwm = 0;
+		rightTargetSpeed = BASE_CONTROL_TRACK_TURN_SPEED;
+		leftTargetSpeed = 0.0f;
 		action = "LEFT_STOP";
 	}
 
-	BaseControl_SetOpenLoopPwm(rightPwm, leftPwm);
+	BaseControl_SetPiTargetsInternal(rightTargetSpeed, leftTargetSpeed);
+	rightPwm = BaseControl_SpeedToFeedforwardPwm(rightTargetSpeed);
+	leftPwm = BaseControl_SpeedToFeedforwardPwm(leftTargetSpeed);
 	BaseControl_PrintLineDebug(line, action, rightPwm, leftPwm);
 }
-
-/**
- * @brief  立即停止底盘运动，并进入 STOP 状态。
- * @param  None
- * @return None
- */
 void BaseControl_Stop(void)
 {
+	BaseControl_ExitPiMode();
+	g_eBaseControlAction = BASE_ACTION_STOP;
 	g_eBaseControlState = BASE_STATE_STOP;
-	Motor_Set(0, 0);
+	BaseControl_ApplyPwm(0, 0);
 }
 
 /**
@@ -236,10 +434,15 @@ void BaseControl_Stop(void)
  */
 void BaseControl_SetState(BaseControl_State_t state)
 {
+	if((state != BASE_STATE_PI_SPEED) && (state != BASE_STATE_LINE_TRACK))
+	{
+		BaseControl_ExitPiMode();
+		g_eBaseControlAction = BASE_ACTION_STOP;
+	}
 	g_eBaseControlState = state;
 	if((state == BASE_STATE_STOP) || (state == BASE_STATE_IDLE))
 	{
-		Motor_Set(0, 0);
+		BaseControl_ApplyPwm(0, 0);
 	}
 }
 
@@ -267,7 +470,9 @@ void BaseControl_SetSafetyEnable(uint8_t enable)
 	(void)enable;
 	g_ucBaseSafetyEnable = 0u;
 #endif
+#if (BASE_CONTROL_ENABLE_ULTRASONIC_SAFETY != 0u)
 	g_ulBaseSafetyLastTick = 0u;
+#endif
 }
 
 /**
@@ -288,7 +493,8 @@ uint8_t BaseControl_GetSafetyEnable(void)
  */
 void BaseControl_SetOpenLoopPwm(int16_t rightPwm, int16_t leftPwm)
 {
-	Motor_Set((int)BaseControl_LimitPwm(rightPwm), (int)BaseControl_LimitPwm(leftPwm));
+	BaseControl_ExitPiMode();
+	BaseControl_ApplyPwm(rightPwm, leftPwm);
 }
 
 /**
@@ -302,8 +508,9 @@ void BaseControl_SetWheelOpenLoop(float leftSpeed, float rightSpeed)
 	int16_t rightPwm = BaseControl_SpeedToPwm(rightSpeed);
 	int16_t leftPwm = BaseControl_SpeedToPwm(leftSpeed);
 
+	BaseControl_ExitPiMode();
 	g_eBaseControlState = BASE_STATE_MANUAL;
-	BaseControl_SetOpenLoopPwm(rightPwm, leftPwm);
+	BaseControl_ApplyPwm(rightPwm, leftPwm);
 }
 
 /**
@@ -315,6 +522,175 @@ void BaseControl_SetWheelOpenLoop(float leftSpeed, float rightSpeed)
 void BaseControl_SetWheelSpeed(float leftSpeed, float rightSpeed)
 {
 	BaseControl_SetWheelOpenLoop(leftSpeed, rightSpeed);
+}
+/**
+ * @brief  开启或关闭独立 PI 轮速测试模式。
+ * @param  enable: 非 0 开启，0 关闭；开启后保持停车，等待 PITARGET 设置目标速度。
+ * @return None
+ */
+void BaseControl_SetPiEnable(uint8_t enable)
+{
+	BaseControl_ResetPiState();
+	if(enable == 0u)
+	{
+		g_ucBasePiEnable = 0u;
+		g_eBaseControlAction = BASE_ACTION_STOP;
+		g_eBaseControlState = BASE_STATE_STOP;
+		BaseControl_ApplyPwm(0, 0);
+		return;
+	}
+
+	g_ucBasePiEnable = 1u;
+	g_eBaseControlAction = BASE_ACTION_PI_TEST;
+	g_eBaseControlState = BASE_STATE_STOP;
+	BaseControl_ApplyPwm(0, 0);
+}
+
+/**
+ * @brief  获取独立 PI 轮速测试模式开关状态。
+ * @param  None
+ * @return 1 表示已开启，0 表示已关闭
+ */
+uint8_t BaseControl_GetPiEnable(void)
+{
+	return g_ucBasePiEnable;
+}
+
+/**
+ * @brief  设置左右轮 PI 目标速度。
+ * @param  leftTargetSpeed: 左轮目标速度，单位与 STATUS 中 SPD_L 相同
+ * @param  rightTargetSpeed: 右轮目标速度，单位与 STATUS 中 SPD_R 相同
+ * @return 1 表示设置成功，0 表示 PI 模式未开启
+ */
+uint8_t BaseControl_SetWheelPiTarget(float leftTargetSpeed, float rightTargetSpeed)
+{
+	if(g_ucBasePiEnable == 0u)
+	{
+		return 0u;
+	}
+
+	/* PIMODE ON 时已清积分；同方向更新目标时保留积分，避免每次调速重新爬升。 */
+	BaseControl_SetPiTargetsInternal(rightTargetSpeed, leftTargetSpeed);
+	g_eBaseControlAction = BASE_ACTION_PI_TEST;
+	g_eBaseControlState = BASE_STATE_PI_SPEED;
+	return 1u;
+}
+
+/**
+ * @brief  启动 PI 红外循迹，固定目标速度由底盘内部根据红外状态设置。
+ * @param  None
+ * @return None
+ */
+void BaseControl_StartPiLineTrack(void)
+{
+	BaseControl_ResetPiState();
+	g_ucBasePiEnable = 1u;
+	g_eBaseControlAction = BASE_ACTION_TRACK;
+	g_eBaseControlState = BASE_STATE_LINE_TRACK;
+	g_ulBaseLineTrackLastTick = 0u;
+	BaseControl_SetPiTargetsInternal(0.0f, 0.0f);
+}
+
+/**
+ * @brief  执行固定速度 PI 动作，树莓派只发送动作名，不传递 PWM 或速度值。
+ * @param  action: 前进、后退、原地左转或原地右转
+ * @return 1 表示动作有效，0 表示动作非法
+ */
+uint8_t BaseControl_StartPiAction(BaseControl_Action_t action)
+{
+	float rightTargetSpeed = 0.0f;
+	float leftTargetSpeed = 0.0f;
+
+	switch(action)
+	{
+		case BASE_ACTION_FORWARD:
+			rightTargetSpeed = BASE_CONTROL_FORWARD_SPEED;
+			leftTargetSpeed = BASE_CONTROL_FORWARD_SPEED;
+			break;
+		case BASE_ACTION_BACKWARD:
+			rightTargetSpeed = -BASE_CONTROL_BACKWARD_SPEED;
+			leftTargetSpeed = -BASE_CONTROL_BACKWARD_SPEED;
+			break;
+		case BASE_ACTION_ROTATE_LEFT:
+			rightTargetSpeed = BASE_CONTROL_ROTATE_SPEED;
+			leftTargetSpeed = -BASE_CONTROL_ROTATE_SPEED;
+			break;
+		case BASE_ACTION_ROTATE_RIGHT:
+			rightTargetSpeed = -BASE_CONTROL_ROTATE_SPEED;
+			leftTargetSpeed = BASE_CONTROL_ROTATE_SPEED;
+			break;
+		default:
+			return 0u;
+	}
+
+	BaseControl_ResetPiState();
+	g_ucBasePiEnable = 1u;
+	g_eBaseControlAction = action;
+	g_eBaseControlState = BASE_STATE_PI_SPEED;
+	BaseControl_SetPiTargetsInternal(rightTargetSpeed, leftTargetSpeed);
+	return 1u;
+}
+
+/**
+ * @brief  获取当前底盘固定动作。
+ * @param  None
+ * @return 当前动作枚举
+ */
+BaseControl_Action_t BaseControl_GetAction(void)
+{
+	return g_eBaseControlAction;
+}
+/**
+ * @brief  在底盘主任务中按实际周期执行一次 PI 运算。
+ * @param  rightMeasuredSpeed: 电机1/右轮实测速度
+ * @param  leftMeasuredSpeed: 电机2/左轮实测速度
+ * @return None
+ */
+void BaseControl_UpdateWheelPi(float rightMeasuredSpeed, float leftMeasuredSpeed, float periodS)
+{
+	int16_t rightPwm;
+	int16_t leftPwm;
+
+	if((g_ucBasePiEnable == 0u) || ((g_eBaseControlState != BASE_STATE_PI_SPEED) && (g_eBaseControlState != BASE_STATE_LINE_TRACK)))
+	{
+		return;
+	}
+
+	/* 基础 PWM 负责跨越死区并接近目标速度，PI 只输出有限修正量。 */
+	rightPwm = (int16_t)(BaseControl_SpeedToFeedforwardPwm(g_tBasePiRight.targetSpeed) +
+		PiSpeed_Update(&g_tBasePiRight, rightMeasuredSpeed, periodS));
+	leftPwm = (int16_t)(BaseControl_SpeedToFeedforwardPwm(g_tBasePiLeft.targetSpeed) +
+		PiSpeed_Update(&g_tBasePiLeft, leftMeasuredSpeed, periodS));
+	BaseControl_ApplyPwm(rightPwm, leftPwm);
+}
+
+/**
+ * @brief  获取 PI 目标速度和实时输出，供 STATUS 回传与网页观察。
+ * @param  leftTargetSpeed: 左轮目标速度输出地址，可为 NULL
+ * @param  rightTargetSpeed: 右轮目标速度输出地址，可为 NULL
+ * @param  leftPwm: 左轮当前 PI 输出 PWM 地址，可为 NULL
+ * @param  rightPwm: 右轮当前 PI 输出 PWM 地址，可为 NULL
+ * @return None
+ */
+void BaseControl_GetPiStatus(float *leftTargetSpeed, float *rightTargetSpeed,
+	int16_t *leftPwm, int16_t *rightPwm)
+{
+	if(leftTargetSpeed != NULL)
+	{
+		*leftTargetSpeed = g_tBasePiLeft.targetSpeed;
+	}
+	if(rightTargetSpeed != NULL)
+	{
+		*rightTargetSpeed = g_tBasePiRight.targetSpeed;
+	}
+	if(leftPwm != NULL)
+	{
+		*leftPwm = g_tBasePiLeft.outputPwm;
+	}
+	if(rightPwm != NULL)
+	{
+		*rightPwm = g_tBasePiRight.outputPwm;
+	}
 }
 
 /**
@@ -344,6 +720,7 @@ int16_t BaseControl_GetLineBasePwm(void)
  */
 void BaseControl_Task(void)
 {
+	BaseControl_UpdateEncoderFeedback();
 	BaseControl_SafetyTask();
 
 	switch(g_eBaseControlState)
@@ -357,10 +734,11 @@ void BaseControl_Task(void)
 			break;
 
 		case BASE_STATE_AVOID:
+		case BASE_STATE_PI_SPEED:
 			break;
 
 		case BASE_STATE_STOP:
-			Motor_Set(0, 0);
+			BaseControl_ApplyPwm(0, 0);
 			break;
 
 		default:

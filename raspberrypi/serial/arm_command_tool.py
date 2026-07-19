@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-树莓派到底盘 STM32 的统一数据帧测试脚本。
+树莓派到机械臂 STM32 的统一数据帧诊断工具。
 
 注意：
   本脚本发送的是新的 $PAYLOAD*CS 帧格式。
-  当前底盘 STM32 代码如果还没有升级新协议，就不会执行这些帧。
+  当前机械臂 STM32 代码如果还没有升级新协议，就不会执行这些帧。
 """
 
 from __future__ import annotations
@@ -15,62 +15,56 @@ import time
 
 import serial
 
-from robot_uart_frame import DEFAULT_BAUDRATE
-from robot_uart_frame import DEFAULT_TIMEOUT
-from robot_uart_frame import build_frame
-from robot_uart_frame import open_serial
-from robot_uart_frame import parse_frame
-from robot_uart_frame import read_line
-from robot_uart_frame import send_frame
+from robot_protocol import DEFAULT_BAUDRATE
+from robot_protocol import DEFAULT_TIMEOUT
+from robot_protocol import build_frame
+from robot_protocol import open_serial
+from robot_protocol import parse_frame
+from robot_protocol import read_line
+from robot_protocol import send_frame
 
 
 DEFAULT_PORT = "/dev/ttyUSB0"
 
 
-def build_base_command(args: argparse.Namespace) -> tuple[str, list[object]]:
+def build_arm_command(args: argparse.Namespace) -> tuple[str, list[object]]:
     """
-    根据命令行参数生成底盘命令字和参数。
+    根据命令行参数生成机械臂命令字和参数。
 
     当前规划动作：
-      STOP        -> 底盘停车
-      IDLE        -> 底盘进入空闲状态
-      MOVE,L,R    -> 设置左右轮目标速度
-      SAFE,ON/OFF -> 开启或关闭超声波安全检查
-      TRACK,ON/OFF -> 开启或关闭循迹模式
-      AVOID,ON    -> 进入避障模式
-      STATUS      -> 查询底盘当前状态
+      STOP              -> 机械臂停止当前动作
+      HOME,time         -> 机械臂回到初始位置
+      SERVO,id,pulse,time -> 控制单个 PWM 舵机
+      STATUS            -> 查询机械臂当前状态
     """
 
     action = args.action.upper()
-    if action in ("STOP", "IDLE"):
-        return action, []
-    if action == "MOVE":
-        return "MOVE", [args.left, args.right]
-    if action in ("SAFE", "TRACK"):
-        return action, [args.switch.upper()]
-    if action == "AVOID":
-        return "AVOID", ["ON"]
+    if action == "STOP":
+        return "STOP", []
+    if action == "HOME":
+        return "HOME", [args.time]
+    if action == "SERVO":
+        return "SERVO", [args.servo_id, args.pulse, args.time]
     if action == "STATUS":
         return "STATUS", []
-    raise ValueError(f"不支持的底盘动作: {args.action}")
+    raise ValueError(f"不支持的机械臂动作: {args.action}")
 
 
 def print_expected_reply(seq: int, command: str) -> None:
     """打印后续 STM32 新协议建议返回的内容，方便联调时对照。"""
 
     print("期望回传示例:")
-    print(f"  成功: $BASE,{seq:03d},ACK,{command}*CS")
-    print(f"  失败: $BASE,{seq:03d},ERR,REASON*CS")
-    print(f"  状态: $BASE,{seq:03d},STATUS,STATE=IDLE,SAFE=ON,DIST=35.2*CS")
+    print(f"  成功: $ARM,{seq:03d},ACK,{command}*CS")
+    print(f"  失败: $ARM,{seq:03d},ERR,REASON*CS")
 
 
 def run_once(args: argparse.Namespace) -> int:
-    """打开串口，发送一帧底盘命令，并按需读取应答。"""
+    """打开串口，发送一帧机械臂命令，并按需读取应答。"""
 
-    command, params = build_base_command(args)
-    frame = build_frame("BASE", args.seq, command, params)
+    command, params = build_arm_command(args)
+    frame = build_frame("ARM", args.seq, command, params)
 
-    print(f"目标: 底盘 STM32 USART1")
+    print(f"目标: 机械臂 STM32 USART1")
     print(f"树莓派串口设备: {args.port}, {args.baudrate} 8N1")
     print(f"发送帧: {frame.strip()}")
     print_expected_reply(args.seq, command)
@@ -105,9 +99,9 @@ def run_once(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """创建底盘测试脚本的命令行参数。"""
+    """创建机械臂测试脚本的命令行参数。"""
 
-    parser = argparse.ArgumentParser(description="底盘 STM32 新数据帧串口测试")
+    parser = argparse.ArgumentParser(description="机械臂 STM32 新数据帧串口测试")
     parser.add_argument("--port", default=DEFAULT_PORT, help=f"串口设备，默认 {DEFAULT_PORT}")
     parser.add_argument("--baudrate", type=int, default=DEFAULT_BAUDRATE, help=f"波特率，默认 {DEFAULT_BAUDRATE}")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="读取应答超时时间，单位秒")
@@ -117,13 +111,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--action",
-        choices=["STOP", "IDLE", "MOVE", "SAFE", "TRACK", "AVOID", "STATUS"],
+        choices=["STOP", "HOME", "SERVO", "STATUS"],
         default="STOP",
-        help="底盘动作，默认 STOP",
+        help="机械臂动作，默认 STOP",
     )
-    parser.add_argument("--left", type=float, default=0.0, help="MOVE 动作的左轮速度")
-    parser.add_argument("--right", type=float, default=0.0, help="MOVE 动作的右轮速度")
-    parser.add_argument("--switch", choices=["ON", "OFF"], default="ON", help="SAFE/TRACK 动作的开关状态")
+    parser.add_argument("--servo-id", type=int, default=1, help="SERVO 动作用的舵机编号，范围由 STM32 限制")
+    parser.add_argument("--pulse", type=int, default=1500, help="SERVO 动作用的目标脉宽，单位 us")
+    parser.add_argument("--time", type=int, default=1000, help="HOME/SERVO 动作用的执行时间，单位 ms")
     return parser
 
 

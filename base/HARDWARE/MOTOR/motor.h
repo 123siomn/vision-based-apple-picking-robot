@@ -12,15 +12,13 @@
 #define  BIN1_RESET  HAL_GPIO_WritePin(BIN1_GPIO_Port,BIN1_Pin,GPIO_PIN_RESET)
 
 
-void Motor_Set(int Motor1,int Motor2);
+/**
+ * @brief  按给定 PWM 写入右轮电机1和左轮电机2。
+ * @param  Motor1: 右轮 PWM，正数为前进
+ * @param  Motor2: 左轮 PWM，正数为前进
+ * @return None
+ */
+void Motor_Set(int Motor1, int Motor2);
 int Motor_GetLastCmd1(void);
 int Motor_GetLastCmd2(void);
-void motorPidSetSpeed(float Motor1SetSpeed,float Motor2SetSpeed);
-void motorPidReset(void);
-float motorPidGetOutputLimit(void);
-float motorPidGetErrSumLimit(void);
-void motorPidSpeedUp(void);
-void motorPidSpeedCut(void);
 #endif
-
-

@@ -7,6 +7,17 @@
 #include <math.h>
 
 #define MAX_SAMPLES 4096
+#define DEFAULT_FRAME_TIMEOUT_MS 1000
+
+typedef struct
+{
+    int cx;
+    int cy;
+    int width;
+    int height;
+    int valid;
+    int z;
+} depth_result_t;
 
 static int cmp_int16(const void *a, const void *b)
 {
@@ -22,6 +33,25 @@ static int clamp_int(int v, int min_v, int max_v)
     return v;
 }
 
+/*
+ * 计算一组深度样本的中位数。
+ * 这里会原地排序 samples，调用方不要再依赖原始顺序。
+ */
+static int median_int16(int16_t *samples, int count)
+{
+    if (count <= 0)
+    {
+        return 0;
+    }
+
+    qsort(samples, count, sizeof(int16_t), cmp_int16);
+    return samples[count / 2];
+}
+
+/*
+ * 从单帧 depth frame 中读取目标点附近 ROI 的有效深度，并返回 ROI 中位数。
+ * z=0 通常表示 Astra 没有测到有效深度，因此会被过滤掉。
+ */
 static int get_roi_median_depth(
     astra_depthframe_t depthFrame,
     int cx,
@@ -42,6 +72,14 @@ static int get_roi_median_depth(
 
     int width = metadata.width;
     int height = metadata.height;
+
+    if (width <= 0 || height <= 0 || depthLength == 0)
+    {
+        *out_width = 0;
+        *out_height = 0;
+        *out_valid = 0;
+        return -1;
+    }
 
     *out_width = width;
     *out_height = height;
@@ -97,9 +135,66 @@ static int get_roi_median_depth(
         return 0;
     }
 
-    qsort(samples, count, sizeof(int16_t), cmp_int16);
+    return median_int16(samples, count);
+}
 
-    return samples[count / 2];
+/*
+ * 解析命令行参数并做基本限幅。
+ * 第一版只接受整数像素坐标，后续检测框中心点来自 Python 的 HSV/YOLO 结果。
+ */
+static void parse_args(
+    char *argv[],
+    int *cx,
+    int *cy,
+    int *radius,
+    int *frames_to_read
+)
+{
+    *cx = atoi(argv[1]);
+    *cy = atoi(argv[2]);
+    *radius = atoi(argv[3]);
+    *frames_to_read = atoi(argv[4]);
+
+    if (*radius < 0) *radius = 0;
+    if (*radius > 10) *radius = 10;
+    if (*frames_to_read < 1) *frames_to_read = 1;
+    if (*frames_to_read > 200) *frames_to_read = 200;
+}
+
+/*
+ * 输出错误并统一返回非零状态码，方便 Python 判断失败。
+ * 注意：Astra SDK 自身 warning 可能输出到 stdout/stderr，Python 端仍以 OK 行为准。
+ */
+static int print_error(const char *reason, int cx, int cy)
+{
+    printf("ERR reason=%s cx=%d cy=%d z=0 valid=0\n", reason, cx, cy);
+    return 2;
+}
+
+/*
+ * 清理 Astra 资源。
+ * 每个标志位表示对应资源是否已经创建成功，避免异常路径重复释放。
+ */
+static void cleanup_astra(
+    astra_reader_t *reader,
+    astra_streamsetconnection_t *sensor,
+    int reader_created,
+    int sensor_opened,
+    int astra_initialized
+)
+{
+    if (reader_created)
+    {
+        astra_reader_destroy(reader);
+    }
+    if (sensor_opened)
+    {
+        astra_streamset_close(sensor);
+    }
+    if (astra_initialized)
+    {
+        astra_terminate();
+    }
 }
 
 int main(int argc, char *argv[])
@@ -111,23 +206,31 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    int cx = atoi(argv[1]);
-    int cy = atoi(argv[2]);
-    int radius = atoi(argv[3]);
-    int frames_to_read = atoi(argv[4]);
+    int cx = 0;
+    int cy = 0;
+    int radius = 0;
+    int frames_to_read = 0;
 
-    if (radius < 0) radius = 0;
-    if (radius > 10) radius = 10;
-    if (frames_to_read < 1) frames_to_read = 1;
-    if (frames_to_read > 200) frames_to_read = 200;
+    parse_args(argv, &cx, &cy, &radius, &frames_to_read);
 
+    /*
+     * 下面几步保持 Astra 官方 DepthReaderPoll 示例的调用方式。
+     * 部分 Astra SDK 版本里 open/create/get/start 这类接口是 void 返回值，
+     * 因此这里不强行按返回码判断；真正取帧时再通过 astra_reader_open_frame()
+     * 的返回值判断设备和数据流是否可用。
+     */
     astra_initialize();
+    int astra_initialized = 1;
 
     astra_streamsetconnection_t sensor;
+    int sensor_opened = 0;
     astra_streamset_open("device/default", &sensor);
+    sensor_opened = 1;
 
     astra_reader_t reader;
+    int reader_created = 0;
     astra_reader_create(sensor, &reader);
+    reader_created = 1;
 
     astra_depthstream_t depthStream;
     astra_reader_get_depthstream(reader, &depthStream);
@@ -138,13 +241,17 @@ int main(int argc, char *argv[])
     astra_depthstream_get_hfov(depthStream, &hFov);
     astra_depthstream_get_vfov(depthStream, &vFov);
 
+    if (hFov <= 0.0f || vFov <= 0.0f)
+    {
+        cleanup_astra(&reader, &sensor, reader_created, sensor_opened, astra_initialized);
+        return print_error("INVALID_FOV", cx, cy);
+    }
+
     astra_stream_start(depthStream);
 
-    int final_z = 0;
-    int final_valid = 0;
-    int final_width = 0;
-    int final_height = 0;
-    int got_valid_frame = 0;
+    depth_result_t frame_results[200];
+    int frame_result_count = 0;
+    int16_t frame_depth_samples[200];
 
     astra_frame_index_t lastFrameIndex = -1;
 
@@ -153,7 +260,7 @@ int main(int argc, char *argv[])
         astra_update();
 
         astra_reader_frame_t frame;
-        astra_status_t rc = astra_reader_open_frame(reader, 1000, &frame);
+        astra_status_t rc = astra_reader_open_frame(reader, DEFAULT_FRAME_TIMEOUT_MS, &frame);
 
         if (rc != ASTRA_STATUS_SUCCESS)
         {
@@ -190,24 +297,46 @@ int main(int argc, char *argv[])
 
         if (z > 0 && valid > 0)
         {
-            final_z = z;
-            final_valid = valid;
-            final_width = width;
-            final_height = height;
-            got_valid_frame = 1;
+            int clamped_cx = clamp_int(cx, 0, width - 1);
+            int clamped_cy = clamp_int(cy, 0, height - 1);
+
+            frame_results[frame_result_count].cx = clamped_cx;
+            frame_results[frame_result_count].cy = clamped_cy;
+            frame_results[frame_result_count].width = width;
+            frame_results[frame_result_count].height = height;
+            frame_results[frame_result_count].valid = valid;
+            frame_results[frame_result_count].z = z;
+            frame_depth_samples[frame_result_count] = (int16_t)z;
+            frame_result_count++;
         }
 
         astra_reader_close_frame(&frame);
     }
 
-    astra_reader_destroy(&reader);
-    astra_streamset_close(&sensor);
-    astra_terminate();
+    cleanup_astra(&reader, &sensor, reader_created, sensor_opened, astra_initialized);
 
-    if (!got_valid_frame)
+    if (frame_result_count <= 0)
     {
-        printf("ERR cx=%d cy=%d z=0 valid=0\n", cx, cy);
-        return 2;
+        return print_error("NO_VALID_DEPTH", cx, cy);
+    }
+
+    /*
+     * 多帧稳定策略：
+     * 1. 每一帧先在 ROI 内取一次中位数；
+     * 2. 再对多帧 ROI 中位数取中位数，避免最后一帧偶然抖动覆盖结果。
+     */
+    int final_z = median_int16(frame_depth_samples, frame_result_count);
+    depth_result_t final_result = frame_results[0];
+    int best_diff = abs(frame_results[0].z - final_z);
+
+    for (int i = 1; i < frame_result_count; i++)
+    {
+        int diff = abs(frame_results[i].z - final_z);
+        if (diff < best_diff)
+        {
+            best_diff = diff;
+            final_result = frame_results[i];
+        }
     }
 
     /*
@@ -220,23 +349,28 @@ int main(int argc, char *argv[])
      *
      * 单位：mm
      */
-    double fx = final_width / (2.0 * tan(hFov / 2.0));
-    double fy = final_height / (2.0 * tan(vFov / 2.0));
+    double fx = final_result.width / (2.0 * tan(hFov / 2.0));
+    double fy = final_result.height / (2.0 * tan(vFov / 2.0));
 
-    double x_mm = (cx - final_width / 2.0) * final_z / fx;
-    double y_mm = (cy - final_height / 2.0) * final_z / fy;
+    if (fx <= 0.0 || fy <= 0.0)
+    {
+        return print_error("INVALID_INTRINSIC", final_result.cx, final_result.cy);
+    }
+
+    double x_mm = (final_result.cx - final_result.width / 2.0) * final_z / fx;
+    double y_mm = (final_result.cy - final_result.height / 2.0) * final_z / fy;
     double z_mm = final_z;
 
     printf(
         "OK cx=%d cy=%d width=%d height=%d x=%.1f y=%.1f z=%.1f valid=%d hFov=%.6f vFov=%.6f\n",
-        cx,
-        cy,
-        final_width,
-        final_height,
+        final_result.cx,
+        final_result.cy,
+        final_result.width,
+        final_result.height,
         x_mm,
         y_mm,
         z_mm,
-        final_valid,
+        final_result.valid,
         hFov,
         vFov
     );

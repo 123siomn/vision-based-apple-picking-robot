@@ -26,7 +26,7 @@
 "base\base_control.o"
 "base\base_protocol.o"
 "base\motor.o"
-"base\pid.o"
+"base\pi_speed.o"
 "base\hc_sr04.o"
 "base\mpu6050.o"
 "base\mpuiic.o"

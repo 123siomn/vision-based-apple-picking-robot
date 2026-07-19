@@ -153,6 +153,19 @@ void BaseCmd_ReceiveByte(uint8_t data)
 
   g_ulBaseCmdRxByteCount++;
 
+  if(data == 0x24U)
+  {
+    g_ucBaseCmdRxIndex = 0U;
+    g_ucBaseCmdEscapePending = 0U;
+    g_ucaBaseCmdRxBuffer[g_ucBaseCmdRxIndex++] = data;
+    return;
+  }
+
+  if(g_ucBaseCmdRxIndex == 0U)
+  {
+    return;
+  }
+
   if(g_ucBaseCmdEscapePending != 0U)
   {
     g_ucBaseCmdEscapePending = 0U;

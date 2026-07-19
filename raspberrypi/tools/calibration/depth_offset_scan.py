@@ -9,7 +9,7 @@ import numpy as np
 # 本脚本只用于测试 RGB 图像坐标到 Depth 图像坐标的像素偏移，不控制机械臂。
 # 调试目标：找到让 depth helper 读到目标本体深度的 offset_x / offset_y。
 
-RASPBERRYPI_DIR = Path(__file__).resolve().parents[1]
+RASPBERRYPI_DIR = Path(__file__).resolve().parents[2]
 DEPTH_EXE = RASPBERRYPI_DIR / "depth_helper" / "depth_xyz_reader"
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 RESULT_IMAGE_PATH = OUTPUT_DIR / "depth_offset_scan.jpg"
