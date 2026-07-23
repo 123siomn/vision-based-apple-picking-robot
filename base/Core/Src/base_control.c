@@ -28,9 +28,15 @@
 #define BASE_CONTROL_BACKWARD_START_SPEED   2.00f
 #define BASE_CONTROL_BACKWARD_RAMP_STEP     0.25f
 #define BASE_CONTROL_ROTATE_SPEED           2.73f
+/* 原地转向与后退在地面静止时需要更高 PWM 才能跨过静摩擦。 */
+#define BASE_CONTROL_ROTATE_START_BOOST_PWM 90
+#define BASE_CONTROL_BACKWARD_START_BOOST_PWM 85
+#define BASE_CONTROL_START_SPEED_EPSILON    0.15f
 /* 抓取完成后回到黑线时使用前进右转，左轮较快、右轮较慢。 */
 #define BASE_CONTROL_RETURN_RIGHT_SPEED_R    2.30f
 #define BASE_CONTROL_RETURN_RIGHT_SPEED_L    3.10f
+/* 直行与前进右转使用额外前馈，补偿带载滚动阻力。 */
+#define BASE_CONTROL_FORWARD_ACTION_FF_BOOST 10
 
 static BaseControl_State_t g_eBaseControlState = BASE_STATE_IDLE;
 static BaseControl_Action_t g_eBaseControlAction = BASE_ACTION_STOP;
@@ -138,6 +144,30 @@ static int16_t BaseControl_SpeedToFeedforwardPwm(float targetSpeed)
  * @param  None
  * @return None
  */
+/**
+ * @brief  为直行和前进右转补充方向相关的前馈 PWM，不改变 PI 目标速度。
+ * @param  feedforwardPwm: 由目标速度换算得到的原始前馈 PWM
+ * @return 增加滚动阻力补偿后的前馈 PWM
+ */
+static int16_t BaseControl_AddForwardActionFeedforward(int16_t feedforwardPwm)
+{
+	if((g_eBaseControlAction != BASE_ACTION_FORWARD) &&
+		(g_eBaseControlAction != BASE_ACTION_RETURN_RIGHT))
+	{
+		return feedforwardPwm;
+	}
+	if(feedforwardPwm > 0)
+	{
+		return BaseControl_LimitPwm((int16_t)(feedforwardPwm +
+			BASE_CONTROL_FORWARD_ACTION_FF_BOOST));
+	}
+	if(feedforwardPwm < 0)
+	{
+		return BaseControl_LimitPwm((int16_t)(feedforwardPwm -
+			BASE_CONTROL_FORWARD_ACTION_FF_BOOST));
+	}
+	return 0;
+}
 static void BaseControl_InitPiIfNeeded(void)
 {
 	if(g_ucBasePiInitialized != 0u)
@@ -724,10 +754,33 @@ void BaseControl_UpdateWheelPi(float rightMeasuredSpeed, float leftMeasuredSpeed
 	}
 
 	/* 基础 PWM 负责跨越死区并接近目标速度，PI 只输出有限修正量。 */
-	rightPwm = (int16_t)(BaseControl_SpeedToFeedforwardPwm(g_tBasePiRight.targetSpeed) +
+	rightPwm = (int16_t)(BaseControl_AddForwardActionFeedforward(BaseControl_SpeedToFeedforwardPwm(g_tBasePiRight.targetSpeed)) +
 		PiSpeed_Update(&g_tBasePiRight, rightMeasuredSpeed, periodS));
-	leftPwm = (int16_t)(BaseControl_SpeedToFeedforwardPwm(g_tBasePiLeft.targetSpeed) +
+	leftPwm = (int16_t)(BaseControl_AddForwardActionFeedforward(BaseControl_SpeedToFeedforwardPwm(g_tBasePiLeft.targetSpeed)) +
 		PiSpeed_Update(&g_tBasePiLeft, leftMeasuredSpeed, periodS));
+
+	/* 地面静止时用动作专用 PWM 跨过静摩擦，轮子起转后仍由 PI 闭环调速。 */
+	if((g_eBaseControlAction == BASE_ACTION_BACKWARD) &&
+		(rightMeasuredSpeed > -BASE_CONTROL_START_SPEED_EPSILON) &&
+		(rightMeasuredSpeed < BASE_CONTROL_START_SPEED_EPSILON) &&
+		(leftMeasuredSpeed > -BASE_CONTROL_START_SPEED_EPSILON) &&
+		(leftMeasuredSpeed < BASE_CONTROL_START_SPEED_EPSILON))
+	{
+		rightPwm = -BASE_CONTROL_BACKWARD_START_BOOST_PWM;
+		leftPwm = -BASE_CONTROL_BACKWARD_START_BOOST_PWM;
+	}
+	else if(((g_eBaseControlAction == BASE_ACTION_ROTATE_LEFT) ||
+		(g_eBaseControlAction == BASE_ACTION_ROTATE_RIGHT)) &&
+		(rightMeasuredSpeed > -BASE_CONTROL_START_SPEED_EPSILON) &&
+		(rightMeasuredSpeed < BASE_CONTROL_START_SPEED_EPSILON) &&
+		(leftMeasuredSpeed > -BASE_CONTROL_START_SPEED_EPSILON) &&
+		(leftMeasuredSpeed < BASE_CONTROL_START_SPEED_EPSILON))
+	{
+		rightPwm = (g_tBasePiRight.targetSpeed >= 0.0f) ?
+			BASE_CONTROL_ROTATE_START_BOOST_PWM : -BASE_CONTROL_ROTATE_START_BOOST_PWM;
+		leftPwm = (g_tBasePiLeft.targetSpeed >= 0.0f) ?
+			BASE_CONTROL_ROTATE_START_BOOST_PWM : -BASE_CONTROL_ROTATE_START_BOOST_PWM;
+	}
 	BaseControl_ApplyPwm(rightPwm, leftPwm);
 	/* 后退从约 -52 PWM 平滑起步，避免首次反向命令直接接近满 PWM。 */
 	if(g_ucBaseBackwardRampActive != 0u)

@@ -32,8 +32,9 @@ DEFAULT_BASE_PORT = "/dev/ttyUSB0"
 BAUDRATE = 115200
 BASE_STATUS_INTERVAL_SEC = 0.5
 
-CAMERA_PATH = "/dev/video0"
-CAMERA_INDEX = 0
+# 当前 Astra 重枚举后，RGB 主图像节点为 /dev/video1；/dev/video2 不作为 RGB 使用。
+CAMERA_PATH = "/dev/video1"
+CAMERA_INDEX = 1
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 SERVER_PORT = 8080
@@ -50,8 +51,10 @@ TARGET_LOST_TIMEOUT_SEC = 2.0
 # 固定抓取位置的图像参考点，采用 640x480 图像中心。
 TARGET_CX = 320
 TARGET_CY = 240
-CX_TOL = 20
-CY_TOL = 20
+# 蓝色抓取对准框在原 26x26 的基础上再缩小三分之一，
+# 目标中心必须进入约 18x18 像素区域后才能开始抓取。
+CX_TOL = 9
+CY_TOL = 9
 # 绿色放置区面积较大，使用比抓取框更宽松的 100x80 像素中心窗口。
 DROP_CX_TOL = 50
 DROP_CY_TOL = 40
@@ -85,23 +88,24 @@ CAMERA_REOPEN_TIMEOUT_SEC = 12.0
 # 正常循迹使用 PWM 50。发现视觉目标后切换到 cx 分段闭环。
 # cx 在 340~369 时，原地转向三次后以前进步进靠近目标，均约 PWM 55。
 # cx 小于 320 时优先后退恢复，约 PWM 70。
-# 视觉闭环中所有前进、后退和原地转向动作统一使用 0.3 秒脉冲。
-ALIGN_PULSE_MS = 300
+# 当前带载时 0.3 秒脉冲不足以稳定跨过黑线边缘的起转摩擦，
+# 所有视觉微调动作统一使用 0.5 秒脉冲。
+ALIGN_PULSE_MS = 500
 ALIGN_SETTLE_SEC = 0.35
 ALIGN_TURNS_BEFORE_FORWARD = 3
 
 # 带载死区测试：固定两轮相同 PWM，持续观察能否在当前负载下稳定起步。
 DEADZONE_TEST_PWM = 40
 
-# 固定演示用机械臂动作：ID1=500 张开，ID1=1201 夹紧。
+# 固定演示用机械臂动作：2~6 号先到位，1 号夹爪最后单独夹紧或松开。
 HOME_TIME_MS = 3000
 OPEN_TIME_MS = 1000
 READY_TIME_MS = 5000
 CLOSE_TIME_MS = 1500
-READY_OPEN_POSE = (500, 1500, 1069, 817, 2309, 2327)
-CLOSE_PULSE = 1201
-# 第一版放置姿态先保持夹爪夹紧，仅让 2~6 号舵机处于中位。
-PLACE_POSE = (CLOSE_PULSE, 1500, 1500, 1500, 1500, 1500)
+GRIPPER_OPEN_PULSE = 500
+GRIPPER_CLOSE_PULSE = 1251
+# 下标依次对应 ID2~ID6。抓取和放置均保持这套末端姿态，ID6 固定为 2464。
+GRASP_ARM_POSE = (1500, 1194, 601, 2219, 2464)
 PLACE_TIME_MS = 5000
 RELEASE_TIME_MS = 1500
 
@@ -404,6 +408,11 @@ class RobotLinks:
         for servo_id, pulse in enumerate(pulses, start=1):
             self.arm_servo(servo_id, pulse, move_time)
 
+    def arm_pose_keep_gripper(self, arm_pulses, move_time):
+        """只设置 2~6 号舵机，确保 1 号夹爪保持当前张开或夹紧状态。"""
+        for servo_id, pulse in enumerate(arm_pulses, start=2):
+            self.arm_servo(servo_id, pulse, move_time)
+
     def arm_return_home_keep_gripper(self, move_time):
         """仅让 2~6 号舵机回中位，保持 1 号夹爪当前位置不变。"""
         for servo_id in range(2, 7):
@@ -580,7 +589,7 @@ class DemoController:
         try:
             self.links.base_stop()
             self.last_base_action = "STOP"
-            self.links.arm_servo(1, READY_OPEN_POSE[0], OPEN_TIME_MS)
+            self.links.arm_servo(1, GRIPPER_OPEN_PULSE, OPEN_TIME_MS)
             self.state_deadline = time.monotonic() + OPEN_TIME_MS / 1000.0 + 0.2
             self._set_state(
                 DemoState.TARGET_DETECTED,
@@ -662,7 +671,7 @@ class DemoController:
         try:
             self.links.base_stop()
             self.last_base_action = "STOP"
-            self.links.arm_pose(READY_OPEN_POSE, READY_TIME_MS)
+            self.links.arm_pose_keep_gripper(GRASP_ARM_POSE, READY_TIME_MS)
         except Exception as exc:
             self._safe_stop_home(f"抓取准备姿态失败：{exc}")
             return
@@ -673,7 +682,7 @@ class DemoController:
     def _start_close(self):
         """机械臂到位后夹紧 ID1，其他五个关节保持抓取姿态。"""
         try:
-            self.links.arm_servo(1, CLOSE_PULSE, CLOSE_TIME_MS)
+            self.links.arm_servo(1, GRIPPER_CLOSE_PULSE, CLOSE_TIME_MS)
         except Exception as exc:
             self._safe_stop_home(f"夹爪夹紧失败：{exc}")
             return
@@ -718,11 +727,11 @@ class DemoController:
         )
 
     def _start_place_pose(self):
-        """停止循迹后保持夹爪夹紧，先到达第一版固定放置姿态。"""
+        """停止循迹后保持夹爪夹紧，让 2~6 号舵机到达固定放置姿态。"""
         try:
             self.links.base_stop()
             self.last_base_action = "STOP"
-            self.links.arm_pose(PLACE_POSE, PLACE_TIME_MS)
+            self.links.arm_pose_keep_gripper(GRASP_ARM_POSE, PLACE_TIME_MS)
         except Exception as exc:
             self._safe_stop_home(f"放置姿态执行失败：{exc}")
             return
@@ -733,7 +742,7 @@ class DemoController:
     def _start_release(self):
         """放置姿态到位后打开 1 号夹爪，释放已抓取的目标。"""
         try:
-            self.links.arm_servo(1, READY_OPEN_POSE[0], RELEASE_TIME_MS)
+            self.links.arm_servo(1, GRIPPER_OPEN_PULSE, RELEASE_TIME_MS)
         except Exception as exc:
             self._safe_stop_home(f"放置释放失败：{exc}")
             return
