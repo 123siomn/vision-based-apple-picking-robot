@@ -40,6 +40,7 @@ SERVER_PORT = 8080
 JPEG_QUALITY = 80
 
 MIN_TARGET_AREA = 600
+MIN_DROP_AREA = 10000
 # 首次发现合格目标后立即停止循迹，避免窄视场内目标被车身惯性冲出画面。
 TARGET_STABLE_FRAMES = 1
 # 目标连续落入抓取框的帧数。达到该值后才允许切换到一次深度读取。
@@ -51,6 +52,10 @@ TARGET_CX = 320
 TARGET_CY = 240
 CX_TOL = 20
 CY_TOL = 20
+# 绿色放置区面积较大，使用比抓取框更宽松的 100x80 像素中心窗口。
+DROP_CX_TOL = 50
+DROP_CY_TOL = 40
+DROP_CENTER_STABLE_FRAMES = 3
 # 基于 cx 的演示分段阈值：循迹区、转向加前进区、转向锁定区、后退恢复区。
 CX_TRACKING_LIMIT = 370
 CX_TURN_FORWARD_LIMIT = 340
@@ -95,6 +100,10 @@ READY_TIME_MS = 5000
 CLOSE_TIME_MS = 1500
 READY_OPEN_POSE = (500, 1500, 1069, 817, 2309, 2327)
 CLOSE_PULSE = 1201
+# 第一版放置姿态先保持夹爪夹紧，仅让 2~6 号舵机处于中位。
+PLACE_POSE = (CLOSE_PULSE, 1500, 1500, 1500, 1500, 1500)
+PLACE_TIME_MS = 5000
+RELEASE_TIME_MS = 1500
 
 
 class DemoState(str, Enum):
@@ -110,6 +119,11 @@ class DemoState(str, Enum):
     READY_WAIT = "READY_WAIT"
     CLOSE_WAIT = "CLOSE_WAIT"
     RETURN_HOME_WAIT = "RETURN_HOME_WAIT"
+    RETURN_TO_LINE = "RETURN_TO_LINE"
+    DROP_LINE_TRACK = "DROP_LINE_TRACK"
+    PLACE_READY_WAIT = "PLACE_READY_WAIT"
+    RELEASE_WAIT = "RELEASE_WAIT"
+    PLACE_RETURN_HOME_WAIT = "PLACE_RETURN_HOME_WAIT"
     DONE = "DONE"
     FAILSAFE = "FAILSAFE"
 
@@ -259,6 +273,47 @@ def detect_largest_red_target(frame):
     return {"bbox": (x, y, width, height), "cx": cx, "cy": cy, "area": area}
 
 
+def build_green_mask(frame):
+    """在 HSV 空间提取绿色放置区，并使用形态学操作抑制零散噪点。"""
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(
+        hsv,
+        np.array([35, 70, 50], dtype=np.uint8),
+        np.array([85, 255, 255], dtype=np.uint8),
+    )
+    kernel = np.ones((5, 5), dtype=np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+
+def detect_largest_green_target(frame):
+    """检测面积不小于阈值的最大绿色放置区，并返回其轮廓中心。"""
+    mask = build_green_mask(frame)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    contour = None
+    area = 0.0
+    for candidate in contours:
+        candidate_area = cv2.contourArea(candidate)
+        if candidate_area >= MIN_DROP_AREA and candidate_area > area:
+            contour = candidate
+            area = candidate_area
+
+    if contour is None:
+        return None
+
+    x, y, width, height = cv2.boundingRect(contour)
+    moments = cv2.moments(contour)
+    if moments["m00"] != 0:
+        cx = int(moments["m10"] / moments["m00"])
+        cy = int(moments["m01"] / moments["m00"])
+    else:
+        cx = x + width // 2
+        cy = y + height // 2
+
+    return {"bbox": (x, y, width, height), "cx": cx, "cy": cy, "area": area}
+
+
 class RobotLinks:
     """复用既有文本帧协议，管理底盘与机械臂两路 USB-TTL 串口。"""
 
@@ -327,6 +382,10 @@ class RobotLinks:
         """让底盘立即停止。"""
         return self._send("BASE", "STOP")
 
+    def base_return_right(self):
+        """让底盘持续前进右转，直到 STM32 检测到黑线并自动恢复循迹。"""
+        return self._send("BASE", "RETURN_RIGHT")
+
     def base_status(self):
         """读取底盘 STATUS 中的循迹传感器、PWM、编码器和轮速诊断信息。"""
         reply = self._send("BASE", "STATUS")
@@ -366,6 +425,7 @@ class DemoController:
         self.state_deadline = 0.0
         self.target_stable_count = 0
         self.target_center_stable_count = 0
+        self.drop_center_stable_count = 0
         self.target_lost_since = None
         self.depth_history = deque(maxlen=DEPTH_MEDIAN_WINDOW)
         self.latest_depth = None
@@ -405,6 +465,7 @@ class DemoController:
                 "align_pulses": self.align_pulse_count,
                 "align_turns_since_forward": self.align_turns_since_forward,
                 "turn_only_after_retreat": self.turn_only_after_retreat,
+                "drop_center_stable_count": self.drop_center_stable_count,
                 "base_action": self.last_base_action,
                 "base_status": self.base_status_detail,
                 "deadzone_pwm": self.deadzone_pwm,
@@ -417,6 +478,8 @@ class DemoController:
             DemoState.LINE_TRACK,
             DemoState.TARGET_DETECTED,
             DemoState.FINE_ALIGN,
+            DemoState.RETURN_TO_LINE,
+            DemoState.DROP_LINE_TRACK,
             DemoState.DEADZONE_TEST,
         ):
             return False
@@ -489,6 +552,7 @@ class DemoController:
         """清除上一轮视觉、深度和微调记录。"""
         self.target_stable_count = 0
         self.target_center_stable_count = 0
+        self.drop_center_stable_count = 0
         self.target_lost_since = None
         self.depth_history.clear()
         self.latest_depth = None
@@ -627,6 +691,66 @@ class DemoController:
 
         self.state_deadline = time.monotonic() + HOME_TIME_MS / 1000.0 + 0.3
         self._set_state(DemoState.RETURN_HOME_WAIT, "机械臂回中位，夹爪保持夹紧")
+
+    def _start_return_to_line(self):
+        """抓取后以右侧前进圆弧回到黑线，回线判定在 STM32 内部完成。"""
+        try:
+            self.links.base_return_right()
+            self.last_base_action = "RETURN_RIGHT"
+            self._set_state(DemoState.RETURN_TO_LINE, "夹持目标，前进右转寻找黑线")
+        except Exception as exc:
+            self._safe_stop_home(f"回线动作启动失败：{exc}")
+
+    def _base_has_rejoined_line(self):
+        """根据 STM32 STATUS 判断回线动作是否已自动切换为 PI 循迹。"""
+        fields = {}
+        for item in self.base_status_detail.split(","):
+            if "=" in item:
+                key, value = item.split("=", 1)
+                fields[key] = value
+        return fields.get("STATE") == "LINE_TRACK" and fields.get("ACT") == "TRACK"
+
+    def _drop_target_is_centered(self, target):
+        """判断绿色放置区中心是否进入宽松的 100x80 像素放置窗口。"""
+        return (
+            abs(target["cx"] - TARGET_CX) <= DROP_CX_TOL
+            and abs(target["cy"] - TARGET_CY) <= DROP_CY_TOL
+        )
+
+    def _start_place_pose(self):
+        """停止循迹后保持夹爪夹紧，先到达第一版固定放置姿态。"""
+        try:
+            self.links.base_stop()
+            self.last_base_action = "STOP"
+            self.links.arm_pose(PLACE_POSE, PLACE_TIME_MS)
+        except Exception as exc:
+            self._safe_stop_home(f"放置姿态执行失败：{exc}")
+            return
+
+        self.state_deadline = time.monotonic() + PLACE_TIME_MS / 1000.0 + 0.4
+        self._set_state(DemoState.PLACE_READY_WAIT, "绿色放置区已对准，机械臂正在到达放置姿态")
+
+    def _start_release(self):
+        """放置姿态到位后打开 1 号夹爪，释放已抓取的目标。"""
+        try:
+            self.links.arm_servo(1, READY_OPEN_POSE[0], RELEASE_TIME_MS)
+        except Exception as exc:
+            self._safe_stop_home(f"放置释放失败：{exc}")
+            return
+
+        self.state_deadline = time.monotonic() + RELEASE_TIME_MS / 1000.0 + 0.3
+        self._set_state(DemoState.RELEASE_WAIT, "夹爪正在张开，释放目标")
+
+    def _start_place_return_home(self):
+        """释放后仅回中 2~6 号舵机，保持 1 号夹爪张开以进入下一轮。"""
+        try:
+            self.links.arm_return_home_keep_gripper(HOME_TIME_MS)
+        except Exception as exc:
+            self._safe_stop_home(f"放置后回中位失败：{exc}")
+            return
+
+        self.state_deadline = time.monotonic() + HOME_TIME_MS / 1000.0 + 0.3
+        self._set_state(DemoState.PLACE_RETURN_HOME_WAIT, "放置完成，机械臂回中位")
 
     def needs_depth(self, target):
         """仅在 RGB 已连续居中后读取一次深度，避免对准阶段抢占相机。"""
@@ -772,8 +896,8 @@ class DemoController:
         # cy 恰好位于参考线但 cx 尚未满足完整蓝框时，保持停车并等待下一帧重测。
         self.message = f"等待转向方向 cx={target['cx']} cy={target['cy']}"
 
-    def update(self, target):
-        """在每帧 RGB 后推进状态机，并处理网页发起的开始或复位请求。"""
+    def update(self, red_target, green_target):
+        """在每帧 RGB 后推进抓取和放置状态机，并处理网页控制请求。"""
         now = time.monotonic()
         with self.lock:
             if self.reset_requested:
@@ -794,25 +918,55 @@ class DemoController:
             if self.state == DemoState.DEADZONE_TEST:
                 return
 
+            if self.state == DemoState.RETURN_TO_LINE:
+                if self._base_has_rejoined_line():
+                    self.drop_center_stable_count = 0
+                    self._set_state(DemoState.DROP_LINE_TRACK, "已重新检测到黑线，循迹前往绿色放置区")
+                else:
+                    self.message = "夹持目标，前进右转寻找黑线"
+                return
+
+            if self.state == DemoState.DROP_LINE_TRACK:
+                if green_target is None:
+                    self.drop_center_stable_count = 0
+                    self.message = "循迹送往放置区，未发现有效绿色区域"
+                elif self._drop_target_is_centered(green_target):
+                    self.drop_center_stable_count += 1
+                    self.message = (
+                        f"绿色放置区居中 {self.drop_center_stable_count}/"
+                        f"{DROP_CENTER_STABLE_FRAMES}"
+                    )
+                    if self.drop_center_stable_count >= DROP_CENTER_STABLE_FRAMES:
+                        self._start_place_pose()
+                else:
+                    self.drop_center_stable_count = 0
+                    self.message = (
+                        f"循迹送往放置区 green_cx={green_target['cx']} "
+                        f"green_cy={green_target['cy']}"
+                    )
+                return
+
             if self.state == DemoState.HOME_WAIT:
                 if now >= self.state_deadline:
                     self._start_tracking()
                 return
 
             if self.state == DemoState.LINE_TRACK:
-                if target is None:
+                if red_target is None:
                     self.target_stable_count = 0
                     self.message = "循迹中，未发现目标"
-                elif target["cx"] >= CX_TRACKING_LIMIT:
+                elif red_target["cx"] >= CX_TRACKING_LIMIT:
                     # 目标仍处于画面右侧远区时，保持红外循迹，不张开夹爪也不进入手动控制。
                     self.target_stable_count = 0
-                    self.message = f"目标远区 cx={target['cx']}，保持 PI 循迹"
+                    self.message = f"目标远区 cx={red_target['cx']}，保持 PI 循迹"
                 else:
                     self.target_stable_count += 1
                     self.message = f"目标稳定 {self.target_stable_count}/{TARGET_STABLE_FRAMES}"
                     if self.target_stable_count >= TARGET_STABLE_FRAMES:
                         self._open_gripper()
                 return
+
+            target = red_target
 
             if self.state in (
                 DemoState.TARGET_DETECTED,
@@ -847,17 +1001,23 @@ class DemoController:
                 return
 
             if self.state == DemoState.RETURN_HOME_WAIT and now >= self.state_deadline:
-                try:
-                    self.links.base_stop()
-                    self.last_base_action = "STOP"
-                except Exception as exc:
-                    self._safe_stop_home(f"最终停止失败：{exc}")
-                    return
-                self._set_state(DemoState.DONE, "本轮抓取完成，等待人工复位")
+                self._start_return_to_line()
+                return
+
+            if self.state == DemoState.PLACE_READY_WAIT and now >= self.state_deadline:
+                self._start_release()
+                return
+
+            if self.state == DemoState.RELEASE_WAIT and now >= self.state_deadline:
+                self._start_place_return_home()
+                return
+
+            if self.state == DemoState.PLACE_RETURN_HOME_WAIT and now >= self.state_deadline:
+                self._start_tracking()
 
 
-def draw_overlay(frame, target, snapshot):
-    """在实时画面中显示目标、固定抓取参考点、深度和状态机状态。"""
+def draw_overlay(frame, red_target, green_target, snapshot):
+    """在实时画面中显示红色抓取目标、绿色放置区与状态机诊断信息。"""
     cv2.line(frame, (TARGET_CX, 0), (TARGET_CX, FRAME_HEIGHT), (0, 255, 255), 1)
     cv2.line(frame, (0, TARGET_CY), (FRAME_WIDTH, TARGET_CY), (0, 255, 255), 1)
     cv2.rectangle(
@@ -865,6 +1025,13 @@ def draw_overlay(frame, target, snapshot):
         (TARGET_CX - CX_TOL, TARGET_CY - CY_TOL),
         (TARGET_CX + CX_TOL, TARGET_CY + CY_TOL),
         (255, 180, 0),
+        1,
+    )
+    cv2.rectangle(
+        frame,
+        (TARGET_CX - DROP_CX_TOL, TARGET_CY - DROP_CY_TOL),
+        (TARGET_CX + DROP_CX_TOL, TARGET_CY + DROP_CY_TOL),
+        (0, 255, 0),
         1,
     )
 
@@ -909,16 +1076,27 @@ def draw_overlay(frame, target, snapshot):
     else:
         lines.append(f"X/Y=-- {depth.get('error', 'DEPTH_FAILED')}")
 
-    if target is None:
-        lines.append("NO_TARGET")
+    if red_target is None:
+        lines.append("RED=NO_TARGET")
     else:
-        x, y, width, height = target["bbox"]
-        cv2.rectangle(frame, (x, y), (x + width, y + height), (0, 255, 0), 2)
-        cv2.circle(frame, (target["cx"], target["cy"]), 5, (0, 0, 255), -1)
+        x, y, width, height = red_target["bbox"]
+        cv2.rectangle(frame, (x, y), (x + width, y + height), (0, 0, 255), 2)
+        cv2.circle(frame, (red_target["cx"], red_target["cy"]), 5, (0, 0, 255), -1)
         lines.append(
-            f"cx={target['cx']} cy={target['cy']} "
-            f"image_dx={target['cx'] - TARGET_CX}px "
-            f"image_dy={target['cy'] - TARGET_CY}px"
+            f"red_cx={red_target['cx']} red_cy={red_target['cy']} "
+            f"dx={red_target['cx'] - TARGET_CX}px dy={red_target['cy'] - TARGET_CY}px"
+        )
+
+    if green_target is None:
+        lines.append("GREEN=NO_DROP_ZONE")
+    else:
+        x, y, width, height = green_target["bbox"]
+        cv2.rectangle(frame, (x, y), (x + width, y + height), (0, 255, 0), 2)
+        cv2.circle(frame, (green_target["cx"], green_target["cy"]), 5, (0, 255, 0), -1)
+        lines.append(
+            f"green_cx={green_target['cx']} green_cy={green_target['cy']} "
+            f"area={green_target['area']:.0f} center={snapshot['drop_center_stable_count']}/"
+            f"{DROP_CENTER_STABLE_FRAMES}"
         )
 
     for index, text in enumerate(lines):
@@ -1082,8 +1260,9 @@ def camera_worker(context):
             if not ok or frame is None:
                 raise RuntimeError("RGB 摄像头读取失败")
 
-            target = detect_largest_red_target(frame)
-            context.controller.update(target)
+            red_target = detect_largest_red_target(frame)
+            green_target = detect_largest_green_target(frame)
+            context.controller.update(red_target, green_target)
 
             if context.controller.needs_base_status():
                 try:
@@ -1092,24 +1271,27 @@ def camera_worker(context):
                     detail = f"STATUS_ERROR={exc}"
                 context.controller.accept_base_status(detail)
 
-            if context.controller.needs_depth(target):
-                preview = draw_overlay(frame.copy(), target, context.controller.snapshot())
+            if context.controller.needs_depth(red_target):
+                preview = draw_overlay(
+                    frame.copy(), red_target, green_target, context.controller.snapshot()
+                )
                 context.publisher.publish(preview)
                 camera.release()
                 camera = None
                 time.sleep(CAMERA_RELEASE_SETTLE_SEC)
 
-                depth = read_depth_xyz(target["cx"], target["cy"])
-                context.controller.accept_depth(depth, target)
+                depth = read_depth_xyz(red_target["cx"], red_target["cy"])
+                context.controller.accept_depth(depth, red_target)
 
                 if context.controller.is_post_depth_sequence():
                     # Astra depth helper 退出后，当前设备的 V4L2 RGB 节点可能无法立即恢复。
                     # 固定演示的抓取动作只依赖深度前最后一帧画面，因此冻结该画面并继续推进机械臂状态机。
                     frozen_frame = frame.copy()
                     while not context.stop_event.is_set():
-                        context.controller.update(None)
+                        context.controller.update(None, None)
                         result = draw_overlay(
-                            frozen_frame.copy(), target, context.controller.snapshot()
+                            frozen_frame.copy(), red_target, green_target,
+                            context.controller.snapshot()
                         )
                         context.publisher.publish(result)
                         time.sleep(0.05)
@@ -1119,7 +1301,7 @@ def camera_worker(context):
                 camera = reopen_camera_with_retry(context.stop_event)
                 continue
 
-            result = draw_overlay(frame, target, context.controller.snapshot())
+            result = draw_overlay(frame, red_target, green_target, context.controller.snapshot())
             context.publisher.publish(result)
     except Exception as exc:
         print(f"CAMERA_WORKER_FAILED: {exc}", flush=True)

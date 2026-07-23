@@ -25,10 +25,16 @@
 #define BASE_CONTROL_TRACK_TURN_SPEED       3.10f
 #define BASE_CONTROL_FORWARD_SPEED          2.73f
 #define BASE_CONTROL_BACKWARD_SPEED         3.51f
+#define BASE_CONTROL_BACKWARD_START_SPEED   2.00f
+#define BASE_CONTROL_BACKWARD_RAMP_STEP     0.25f
 #define BASE_CONTROL_ROTATE_SPEED           2.73f
+/* 抓取完成后回到黑线时使用前进右转，左轮较快、右轮较慢。 */
+#define BASE_CONTROL_RETURN_RIGHT_SPEED_R    2.30f
+#define BASE_CONTROL_RETURN_RIGHT_SPEED_L    3.10f
 
 static BaseControl_State_t g_eBaseControlState = BASE_STATE_IDLE;
 static BaseControl_Action_t g_eBaseControlAction = BASE_ACTION_STOP;
+static uint8_t g_ucBaseBackwardRampActive = 0u;
 static uint8_t g_ucBaseSafetyEnable = 0u;
 #if (BASE_CONTROL_ENABLE_ULTRASONIC_SAFETY != 0u)
 static uint32_t g_ulBaseSafetyLastTick = 0u;
@@ -158,6 +164,7 @@ static void BaseControl_ResetPiState(void)
 	PiSpeed_Reset(&g_tBasePiLeft);
 	/* 下次采样直接使用最新编码器速度，避免模式切换沿用旧滤波值。 */
 	g_ucBaseSpeedFilterReady = 0u;
+	g_ucBaseBackwardRampActive = 0u;
 }
 
 /**
@@ -188,6 +195,27 @@ static void BaseControl_SetPiTargetsInternal(float rightTargetSpeed, float leftT
 	BaseControl_InitPiIfNeeded();
 	PiSpeed_SetTarget(&g_tBasePiRight, BaseControl_LimitPiTargetSpeed(rightTargetSpeed));
 	PiSpeed_SetTarget(&g_tBasePiLeft, BaseControl_LimitPiTargetSpeed(leftTargetSpeed));
+}
+/**
+ * @brief  以固定步长将当前 PI 目标平滑靠近最终目标。
+ * @param  current: 当前生效目标速度
+ * @param  target: 最终目标速度
+ * @param  step: 每次 PI 周期允许的速度变化量
+ * @return 下一次生效目标速度
+ */
+static float BaseControl_RampTarget(float current, float target, float step)
+{
+	if(current < target)
+	{
+		current += step;
+		return (current > target) ? target : current;
+	}
+	if(current > target)
+	{
+		current -= step;
+		return (current < target) ? target : current;
+	}
+	return target;
 }
 static void BaseControl_ApplyPwm(int16_t rightPwm, int16_t leftPwm)
 {
@@ -400,8 +428,8 @@ static void BaseControl_LineTrackTask(void)
 	rightTargetSpeed = BASE_CONTROL_TRACK_SPEED;
 	leftTargetSpeed = BASE_CONTROL_TRACK_SPEED;
 
-	/* 0=白底板，1=黑线；1号传感器只读取，不参与控制。 */
-	if(line[1] != 0u)
+	/* 0=白底板，1=黑线；1、2号位于右侧，检测黑线时执行右侧修正。 */
+	if((line[0] != 0u) || (line[1] != 0u))
 	{
 		rightTargetSpeed = 0.0f;
 		leftTargetSpeed = BASE_CONTROL_TRACK_TURN_SPEED;
@@ -419,6 +447,32 @@ static void BaseControl_LineTrackTask(void)
 	leftPwm = BaseControl_SpeedToFeedforwardPwm(leftTargetSpeed);
 	BaseControl_PrintLineDebug(line, action, rightPwm, leftPwm);
 }
+
+/**
+ * @brief  抓取完成后以右侧圆弧寻找黑线，检测到任一黑线后自动恢复 PI 循迹。
+ * @param  None
+ * @return None
+ */
+static void BaseControl_ReturnRightTask(void)
+{
+	uint8_t line[4];
+	uint32_t now = HAL_GetTick();
+
+	if((now - g_ulBaseLineTrackLastTick) < 20u)
+	{
+		return;
+	}
+	g_ulBaseLineTrackLastTick = now;
+	BaseControl_ReadLineState(line);
+	if((line[0] != 0u) || (line[1] != 0u) || (line[2] != 0u) || (line[3] != 0u))
+	{
+		BaseControl_StartPiLineTrack();
+		return;
+	}
+
+	BaseControl_SetPiTargetsInternal(BASE_CONTROL_RETURN_RIGHT_SPEED_R,
+		BASE_CONTROL_RETURN_RIGHT_SPEED_L);
+}
 void BaseControl_Stop(void)
 {
 	BaseControl_ExitPiMode();
@@ -434,7 +488,8 @@ void BaseControl_Stop(void)
  */
 void BaseControl_SetState(BaseControl_State_t state)
 {
-	if((state != BASE_STATE_PI_SPEED) && (state != BASE_STATE_LINE_TRACK))
+	if((state != BASE_STATE_PI_SPEED) && (state != BASE_STATE_LINE_TRACK) &&
+		(state != BASE_STATE_RETURN_RIGHT))
 	{
 		BaseControl_ExitPiMode();
 		g_eBaseControlAction = BASE_ACTION_STOP;
@@ -608,8 +663,8 @@ uint8_t BaseControl_StartPiAction(BaseControl_Action_t action)
 			leftTargetSpeed = BASE_CONTROL_FORWARD_SPEED;
 			break;
 		case BASE_ACTION_BACKWARD:
-			rightTargetSpeed = -BASE_CONTROL_BACKWARD_SPEED;
-			leftTargetSpeed = -BASE_CONTROL_BACKWARD_SPEED;
+			rightTargetSpeed = -BASE_CONTROL_BACKWARD_START_SPEED;
+			leftTargetSpeed = -BASE_CONTROL_BACKWARD_START_SPEED;
 			break;
 		case BASE_ACTION_ROTATE_LEFT:
 			rightTargetSpeed = BASE_CONTROL_ROTATE_SPEED;
@@ -619,6 +674,10 @@ uint8_t BaseControl_StartPiAction(BaseControl_Action_t action)
 			rightTargetSpeed = -BASE_CONTROL_ROTATE_SPEED;
 			leftTargetSpeed = BASE_CONTROL_ROTATE_SPEED;
 			break;
+		case BASE_ACTION_RETURN_RIGHT:
+			rightTargetSpeed = BASE_CONTROL_RETURN_RIGHT_SPEED_R;
+			leftTargetSpeed = BASE_CONTROL_RETURN_RIGHT_SPEED_L;
+			break;
 		default:
 			return 0u;
 	}
@@ -626,8 +685,14 @@ uint8_t BaseControl_StartPiAction(BaseControl_Action_t action)
 	BaseControl_ResetPiState();
 	g_ucBasePiEnable = 1u;
 	g_eBaseControlAction = action;
-	g_eBaseControlState = BASE_STATE_PI_SPEED;
+	g_eBaseControlState = (action == BASE_ACTION_RETURN_RIGHT) ?
+		BASE_STATE_RETURN_RIGHT : BASE_STATE_PI_SPEED;
 	BaseControl_SetPiTargetsInternal(rightTargetSpeed, leftTargetSpeed);
+	if(action == BASE_ACTION_BACKWARD)
+	{
+		/* 目标已从 -2.00 SPD 起步，后续由 PI 周期平滑增加。 */
+		g_ucBaseBackwardRampActive = 1u;
+	}
 	return 1u;
 }
 
@@ -651,7 +716,9 @@ void BaseControl_UpdateWheelPi(float rightMeasuredSpeed, float leftMeasuredSpeed
 	int16_t rightPwm;
 	int16_t leftPwm;
 
-	if((g_ucBasePiEnable == 0u) || ((g_eBaseControlState != BASE_STATE_PI_SPEED) && (g_eBaseControlState != BASE_STATE_LINE_TRACK)))
+	if((g_ucBasePiEnable == 0u) || ((g_eBaseControlState != BASE_STATE_PI_SPEED) &&
+		(g_eBaseControlState != BASE_STATE_LINE_TRACK) &&
+		(g_eBaseControlState != BASE_STATE_RETURN_RIGHT)))
 	{
 		return;
 	}
@@ -662,6 +729,21 @@ void BaseControl_UpdateWheelPi(float rightMeasuredSpeed, float leftMeasuredSpeed
 	leftPwm = (int16_t)(BaseControl_SpeedToFeedforwardPwm(g_tBasePiLeft.targetSpeed) +
 		PiSpeed_Update(&g_tBasePiLeft, leftMeasuredSpeed, periodS));
 	BaseControl_ApplyPwm(rightPwm, leftPwm);
+	/* 后退从约 -52 PWM 平滑起步，避免首次反向命令直接接近满 PWM。 */
+	if(g_ucBaseBackwardRampActive != 0u)
+	{
+		float rightTarget = BaseControl_RampTarget(g_tBasePiRight.targetSpeed,
+			-BASE_CONTROL_BACKWARD_SPEED, BASE_CONTROL_BACKWARD_RAMP_STEP);
+		float leftTarget = BaseControl_RampTarget(g_tBasePiLeft.targetSpeed,
+			-BASE_CONTROL_BACKWARD_SPEED, BASE_CONTROL_BACKWARD_RAMP_STEP);
+
+		BaseControl_SetPiTargetsInternal(rightTarget, leftTarget);
+		if((rightTarget <= -BASE_CONTROL_BACKWARD_SPEED) &&
+			(leftTarget <= -BASE_CONTROL_BACKWARD_SPEED))
+		{
+			g_ucBaseBackwardRampActive = 0u;
+		}
+	}
 }
 
 /**
@@ -731,6 +813,10 @@ void BaseControl_Task(void)
 
 		case BASE_STATE_LINE_TRACK:
 			BaseControl_LineTrackTask();
+			break;
+
+		case BASE_STATE_RETURN_RIGHT:
+			BaseControl_ReturnRightTask();
 			break;
 
 		case BASE_STATE_AVOID:

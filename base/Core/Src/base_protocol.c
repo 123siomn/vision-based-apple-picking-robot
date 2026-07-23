@@ -182,6 +182,8 @@ static const char *BaseProtocol_GetStateText(void)
 			return "AVOID";
 		case BASE_STATE_PI_SPEED:
 			return "PI_SPEED";
+		case BASE_STATE_RETURN_RIGHT:
+			return "RETURN_RIGHT";
 		case BASE_STATE_STOP:
 			return "STOP";
 		default:
@@ -207,6 +209,8 @@ static const char *BaseProtocol_GetActionText(void)
 			return "ROTATE_LEFT";
 		case BASE_ACTION_ROTATE_RIGHT:
 			return "ROTATE_RIGHT";
+		case BASE_ACTION_RETURN_RIGHT:
+			return "RETURN_RIGHT";
 		case BASE_ACTION_PI_TEST:
 			return "PI_TEST";
 		case BASE_ACTION_STOP:
@@ -238,7 +242,7 @@ static void BaseProtocol_SendStatus(const char *seq, uint8_t includeDebug)
 	line3 = (HAL_GPIO_ReadPin(HW_OUT_3_GPIO_Port, HW_OUT_3_Pin) == GPIO_PIN_SET) ? 1u : 0u;
 	line4 = (HAL_GPIO_ReadPin(HW_OUT_4_GPIO_Port, HW_OUT_4_Pin) == GPIO_PIN_SET) ? 1u : 0u;
 
-	if(line2 != 0u)
+	if((line1 != 0u) || (line2 != 0u))
 	{
 		lineAction = "RIGHT_STOP";
 	}
@@ -692,6 +696,11 @@ static void BaseProtocol_HandleFrame(char *line)
 	if(strcmp(cmd, "ROTATE_RIGHT") == 0)
 	{
 		BaseProtocol_HandleFixedAction(seq, BASE_ACTION_ROTATE_RIGHT, "ROTATE_RIGHT");
+		return;
+	}
+	if(strcmp(cmd, "RETURN_RIGHT") == 0)
+	{
+		BaseProtocol_HandleFixedAction(seq, BASE_ACTION_RETURN_RIGHT, "RETURN_RIGHT");
 		return;
 	}
 	if(strcmp(cmd, "AVOID") == 0)

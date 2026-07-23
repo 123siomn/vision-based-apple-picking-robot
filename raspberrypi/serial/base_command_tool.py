@@ -50,7 +50,10 @@ def build_base_command(args: argparse.Namespace) -> tuple[str, list[object]]:
         return action, [args.switch.upper()]
     if action == "AVOID":
         return "AVOID", ["ON"]
-    if action in ("STATUS", "STATUSDBG", "FORWARD", "BACKWARD", "ROTATE_LEFT", "ROTATE_RIGHT"):
+    if action in (
+        "STATUS", "STATUSDBG", "FORWARD", "BACKWARD", "ROTATE_LEFT",
+        "ROTATE_RIGHT", "RETURN_RIGHT",
+    ):
         return action, []
     raise ValueError(f"不支持的底盘动作: {args.action}")
 
@@ -119,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--action",
         choices=[
             "STOP", "IDLE", "MOVE", "SAFE", "TRACK", "AVOID", "STATUS", "STATUSDBG",
-            "FORWARD", "BACKWARD", "ROTATE_LEFT", "ROTATE_RIGHT",
+            "FORWARD", "BACKWARD", "ROTATE_LEFT", "ROTATE_RIGHT", "RETURN_RIGHT",
         ],
         default="STOP",
         help="底盘动作，默认 STOP",
