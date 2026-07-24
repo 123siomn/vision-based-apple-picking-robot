@@ -21,6 +21,8 @@
 #define BASE_CONTROL_FF_MID_SPEED           3.00f
 #define BASE_CONTROL_FF_MAX_SPEED           5.00f
 #define BASE_CONTROL_FF_MID_PWM            60
+/* 所有 PI 动作的基础前馈统一提高，补偿带载时的滚动阻力。 */
+#define BASE_CONTROL_FF_ALL_ACTION_BOOST    15
 #define BASE_CONTROL_TRACK_SPEED            2.60f
 #define BASE_CONTROL_TRACK_TURN_SPEED       2.60f
 #define BASE_CONTROL_FORWARD_SPEED          2.23f
@@ -29,9 +31,9 @@
 #define BASE_CONTROL_BACKWARD_RAMP_STEP     0.25f
 #define BASE_CONTROL_ROTATE_SPEED           2.23f
 /* 原地转向与后退在地面静止时需要更高 PWM 才能跨过静摩擦。 */
-#define BASE_CONTROL_ROTATE_START_BOOST_PWM 90
-#define BASE_CONTROL_BACKWARD_START_BOOST_PWM 85
-#define BASE_CONTROL_FORWARD_STALL_BOOST_PWM 90
+#define BASE_CONTROL_ROTATE_START_BOOST_PWM 99
+#define BASE_CONTROL_BACKWARD_START_BOOST_PWM 99
+#define BASE_CONTROL_FORWARD_STALL_BOOST_PWM 99
 #define BASE_CONTROL_STALL_ENTER_SPEED       0.15f
 #define BASE_CONTROL_STALL_RELEASE_SPEED     0.30f
 #define BASE_CONTROL_STALL_CONFIRM_MS        60u
@@ -153,7 +155,9 @@ static int16_t BaseControl_SpeedToFeedforwardPwm(float targetSpeed)
 			(BASE_CONTROL_FF_MAX_SPEED - BASE_CONTROL_FF_MID_SPEED);
 	}
 
-	signedPwm = BaseControl_LimitPwm((int16_t)(pwm + 0.5f));
+	/* 对每个非零 PI 动作统一增加同向基础 PWM，目标速度与 PI 参数保持不变。 */
+	signedPwm = BaseControl_LimitPwm((int16_t)(pwm + 0.5f) +
+		BASE_CONTROL_FF_ALL_ACTION_BOOST);
 	return (targetSpeed >= 0.0f) ? signedPwm : (int16_t)(-signedPwm);
 }
 /**

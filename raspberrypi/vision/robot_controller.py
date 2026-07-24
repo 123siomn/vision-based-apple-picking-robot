@@ -33,8 +33,8 @@ BAUDRATE = 115200
 BASE_STATUS_INTERVAL_SEC = 0.5
 
 # 当前 Astra 重枚举后，RGB 主图像节点为 /dev/video1；/dev/video2 不作为 RGB 使用。
-CAMERA_PATH = "/dev/video1"
-CAMERA_INDEX = 1
+CAMERA_PATH = "/dev/video0"
+CAMERA_INDEX = 0
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 SERVER_PORT = 8080
@@ -88,11 +88,13 @@ CAMERA_REOPEN_TIMEOUT_SEC = 12.0
 # 正常循迹使用 PWM 50。发现视觉目标后切换到 cx 分段闭环。
 # cx 在 340~369 时，原地转向三次后以前进步进靠近目标，均约 PWM 55。
 # cx 小于 320 时优先后退恢复，约 PWM 70。
-# 当前带载时 0.3 秒脉冲不足以稳定跨过黑线边缘的起转摩擦，
-# 所有视觉微调动作统一使用 0.5 秒脉冲。
-ALIGN_PULSE_MS = 500
+# 所有视觉微调动作统一使用 0.2 秒脉冲；每个脉冲结束后停车并重新识别。
+ALIGN_PULSE_MS = 200
 ALIGN_SETTLE_SEC = 0.35
 ALIGN_TURNS_BEFORE_FORWARD = 3
+# 目标位于中心水平线附近时，只按 X 轴做直线前后校正，不再执行原地转向。
+CY_STRAIGHT_MODE_MIN = 235
+CY_STRAIGHT_MODE_MAX = 245
 
 # 带载死区测试：固定两轮相同 PWM，持续观察能否在当前负载下稳定起步。
 DEADZONE_TEST_PWM = 40
@@ -104,8 +106,8 @@ READY_TIME_MS = 5000
 CLOSE_TIME_MS = 1500
 GRIPPER_OPEN_PULSE = 500
 GRIPPER_CLOSE_PULSE = 1251
-# 下标依次对应 ID2~ID6。抓取和放置均保持这套末端姿态，ID6 固定为 2464。
-GRASP_ARM_POSE = (1500, 1194, 601, 2219, 2464)
+# 下标依次对应 ID2~ID6。抓取和放置均保持经上位机确认的这套末端姿态。
+GRASP_ARM_POSE = (1500, 1212, 781, 2363, 2471)
 PLACE_TIME_MS = 5000
 RELEASE_TIME_MS = 1500
 
@@ -843,6 +845,32 @@ class DemoController:
             return
 
         self.target_center_stable_count = 0
+
+        # Y 已对准中心水平线时，只按 X 轴直线修正。
+        # 每次脉冲均由 _finish_pulse_if_due() 停车、等待画面稳定后再重新判断。
+        if CY_STRAIGHT_MODE_MIN <= target["cy"] <= CY_STRAIGHT_MODE_MAX:
+            if target["cx"] > 325:
+                self._start_base_pulse(
+                    "FORWARD",
+                    "FORWARD_BY_X",
+                    f"cx={target['cx']} cy={target['cy']} y_centered=1",
+                )
+                self.align_turns_since_forward = 0
+                return
+
+            if target["cx"] < 315:
+                self._start_base_pulse(
+                    "BACKWARD",
+                    "RETREAT_BY_X",
+                    f"cx={target['cx']} cy={target['cy']} y_centered=1",
+                )
+                self.align_turns_since_forward = 0
+                return
+
+            self.message = (
+                f"Y 已对准，等待 X 进入抓取框 cx={target['cx']} cy={target['cy']}"
+            )
+            return
 
         # cx 小于 320 时只允许后退；进入该分支后，回到 cx>=330 前不执行其它动作。
         if target["cx"] < CX_RETREAT_TRIGGER:
