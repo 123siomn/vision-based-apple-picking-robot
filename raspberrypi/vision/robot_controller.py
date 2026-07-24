@@ -41,7 +41,7 @@ SERVER_PORT = 8080
 JPEG_QUALITY = 80
 
 MIN_TARGET_AREA = 600
-MIN_DROP_AREA = 10000
+MIN_DROP_AREA = 5000
 # 首次发现合格目标后立即停止循迹，避免窄视场内目标被车身惯性冲出画面。
 TARGET_STABLE_FRAMES = 1
 # 目标连续落入抓取框的帧数。达到该值后才允许切换到一次深度读取。
@@ -55,9 +55,9 @@ TARGET_CY = 240
 # 目标中心必须进入约 18x18 像素区域后才能开始抓取。
 CX_TOL = 9
 CY_TOL = 9
-# 绿色放置区面积较大，使用比抓取框更宽松的 100x80 像素中心窗口。
-DROP_CX_TOL = 50
-DROP_CY_TOL = 40
+# 绿色放置区面积较大，使用比抓取框更宽松的 200x160 像素中心窗口。
+DROP_CX_TOL = 100
+DROP_CY_TOL = 80
 DROP_CENTER_STABLE_FRAMES = 3
 # 基于 cx 的演示分段阈值：循迹区、转向加前进区、转向锁定区、后退恢复区。
 CX_TRACKING_LIMIT = 370
@@ -365,7 +365,7 @@ class RobotLinks:
             raise RuntimeError(f"{target} 应答序号不匹配：{reply}")
         if parsed.command == "ERR":
             raise RuntimeError(f"{target} 返回错误：{reply}")
-        expected_reply = "STATUS" if command == "STATUS" else "ACK"
+        expected_reply = "STATUS" if command in ("STATUS", "STATUSDBG") else "ACK"
         if parsed.command != expected_reply:
             raise RuntimeError(f"{target} 应答类型异常：{reply}")
         return reply
@@ -391,8 +391,8 @@ class RobotLinks:
         return self._send("BASE", "RETURN_RIGHT")
 
     def base_status(self):
-        """读取底盘 STATUS 中的循迹传感器、PWM、编码器和轮速诊断信息。"""
-        reply = self._send("BASE", "STATUS")
+        """读取底盘 STATUSDBG 中的循迹、PI 与单轮卡滞诊断信息。"""
+        reply = self._send("BASE", "STATUSDBG")
         return ",".join(parse_frame(reply).params)
 
     def arm_home(self, move_time):
@@ -720,7 +720,7 @@ class DemoController:
         return fields.get("STATE") == "LINE_TRACK" and fields.get("ACT") == "TRACK"
 
     def _drop_target_is_centered(self, target):
-        """判断绿色放置区中心是否进入宽松的 100x80 像素放置窗口。"""
+        """判断绿色放置区中心是否进入宽松的 200x160 像素放置窗口。"""
         return (
             abs(target["cx"] - TARGET_CX) <= DROP_CX_TOL
             and abs(target["cy"] - TARGET_CY) <= DROP_CY_TOL
@@ -1072,6 +1072,11 @@ def draw_overlay(frame, red_target, green_target, snapshot):
         lines.append(
             f"spd R/L={base_fields.get('SPD_R', '--')}/{base_fields.get('SPD_L', '--')}"
         )
+        if "STALL_R" in base_fields:
+            lines.append(
+                f"stall R/L={base_fields.get('STALL_R', '--')}/{base_fields.get('STALL_L', '--')} "
+                f"boost R/L={base_fields.get('BOOST_R', '--')}/{base_fields.get('BOOST_L', '--')}"
+            )
 
     depth = snapshot["depth"]
     if depth is None:

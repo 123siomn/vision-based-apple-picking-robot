@@ -7,5 +7,6 @@
 - `../serial/base_command_tool.py`：底盘串口协议诊断。
 - `../serial/arm_command_tool.py`：机械臂统一数据帧诊断。
 - `pi_speed_web.py`：底盘 PI 速度网页工具。
+- `rgb_detection_preview.py`：纯 RGB 红色目标检测网页，用于调整相机角度；不连接串口或深度 SDK。
 
 正式控制程序位于 `../vision/robot_controller.py`。

@@ -149,6 +149,16 @@ void BaseControl_GetPiStatus(float *leftTargetSpeed, float *rightTargetSpeed,
 	int16_t *leftPwm, int16_t *rightPwm);
 
 /**
+ * @brief  获取左右轮卡滞状态与当前补偿 PWM，供调试状态回传。
+ * @param  leftStalled: 左轮是否已确认卡滞，可为 NULL
+ * @param  rightStalled: 右轮是否已确认卡滞，可为 NULL
+ * @param  leftBoostPwm: 左轮当前补偿 PWM，可为 NULL
+ * @param  rightBoostPwm: 右轮当前补偿 PWM，可为 NULL
+ * @return None
+ */
+void BaseControl_GetStallStatus(uint8_t *leftStalled, uint8_t *rightStalled,
+	int16_t *leftBoostPwm, int16_t *rightBoostPwm);
+/**
  * @brief  设置红外循迹开环基础 PWM。
  * @param  pwm: 循迹直行时的基础 PWM
  * @return None

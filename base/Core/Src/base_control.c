@@ -12,32 +12,47 @@
 #define BASE_LINE_DEBUG_ENABLE        0u
 #define BASE_LINE_DEBUG_INTERVAL_MS   200u
 /* 独立 PI 初始参数，仅用于轮速测试模式，后续通过网页实测后再调大或调小。 */
-#define BASE_CONTROL_PI_KP                 5.0f
-#define BASE_CONTROL_PI_KI                 0.5f
+#define BASE_CONTROL_PI_KP                 12.0f
+#define BASE_CONTROL_PI_KI                 1.0f
 #define BASE_CONTROL_PI_INTEGRAL_MAX       60.0f
 #define BASE_CONTROL_PI_CORRECTION_LIMIT   30
-#define BASE_CONTROL_SPEED_FILTER_ALPHA    0.35f
+#define BASE_CONTROL_SPEED_FILTER_ALPHA    0.50f
 #define BASE_CONTROL_FF_MIN_SPEED           1.90f
 #define BASE_CONTROL_FF_MID_SPEED           3.00f
 #define BASE_CONTROL_FF_MAX_SPEED           5.00f
 #define BASE_CONTROL_FF_MID_PWM            60
-#define BASE_CONTROL_TRACK_SPEED            3.10f
-#define BASE_CONTROL_TRACK_TURN_SPEED       3.10f
-#define BASE_CONTROL_FORWARD_SPEED          2.73f
-#define BASE_CONTROL_BACKWARD_SPEED         3.51f
-#define BASE_CONTROL_BACKWARD_START_SPEED   2.00f
+#define BASE_CONTROL_TRACK_SPEED            2.60f
+#define BASE_CONTROL_TRACK_TURN_SPEED       2.60f
+#define BASE_CONTROL_FORWARD_SPEED          2.23f
+#define BASE_CONTROL_BACKWARD_SPEED         3.01f
+#define BASE_CONTROL_BACKWARD_START_SPEED   1.50f
 #define BASE_CONTROL_BACKWARD_RAMP_STEP     0.25f
-#define BASE_CONTROL_ROTATE_SPEED           2.73f
+#define BASE_CONTROL_ROTATE_SPEED           2.23f
 /* 原地转向与后退在地面静止时需要更高 PWM 才能跨过静摩擦。 */
 #define BASE_CONTROL_ROTATE_START_BOOST_PWM 90
 #define BASE_CONTROL_BACKWARD_START_BOOST_PWM 85
-#define BASE_CONTROL_START_SPEED_EPSILON    0.15f
+#define BASE_CONTROL_FORWARD_STALL_BOOST_PWM 90
+#define BASE_CONTROL_STALL_ENTER_SPEED       0.15f
+#define BASE_CONTROL_STALL_RELEASE_SPEED     0.30f
+#define BASE_CONTROL_STALL_CONFIRM_MS        60u
+#define BASE_CONTROL_STALL_BOOST_MS          120u
+#define BASE_CONTROL_STALL_COOLDOWN_MS       100u
 /* 抓取完成后回到黑线时使用前进右转，左轮较快、右轮较慢。 */
-#define BASE_CONTROL_RETURN_RIGHT_SPEED_R    2.30f
-#define BASE_CONTROL_RETURN_RIGHT_SPEED_L    3.10f
+#define BASE_CONTROL_RETURN_RIGHT_SPEED_R    1.00f
+#define BASE_CONTROL_RETURN_RIGHT_SPEED_L    3.00f
 /* 直行与前进右转使用额外前馈，补偿带载滚动阻力。 */
 #define BASE_CONTROL_FORWARD_ACTION_FF_BOOST 10
 
+typedef struct
+{
+	uint8_t lowSpeedActive;
+	uint8_t stalled;
+	uint8_t boostActive;
+	uint32_t lowSpeedStartTick;
+	uint32_t boostStartTick;
+	uint32_t cooldownUntilTick;
+	int16_t boostPwm;
+} BaseControl_StallState_t;
 static BaseControl_State_t g_eBaseControlState = BASE_STATE_IDLE;
 static BaseControl_Action_t g_eBaseControlAction = BASE_ACTION_STOP;
 static uint8_t g_ucBaseBackwardRampActive = 0u;
@@ -57,6 +72,8 @@ static PiSpeedController_t g_tBasePiLeft;
 static uint32_t g_ulBaseSpeedLastTick = 0u;
 static uint32_t g_ulBasePiLastTick = 0u;
 static uint8_t g_ucBaseSpeedFilterReady = 0u;
+static BaseControl_StallState_t g_tBaseRightStall;
+static BaseControl_StallState_t g_tBaseLeftStall;
 
 /* 编码器与速度由 BaseControl_Task 周期更新，STATUS 只读取并回传。 */
 extern short Encode1Count;
@@ -168,6 +185,125 @@ static int16_t BaseControl_AddForwardActionFeedforward(int16_t feedforwardPwm)
 	}
 	return 0;
 }
+/**
+ * @brief  清除单轮卡滞检测与补偿状态。
+ * @param  state: 待清除的单轮状态对象
+ * @return None
+ */
+static void BaseControl_ResetStallState(BaseControl_StallState_t *state)
+{
+	if(state != NULL)
+	{
+		memset(state, 0, sizeof(BaseControl_StallState_t));
+	}
+}
+
+/**
+ * @brief  判断当前动作下单轮卡滞补偿的最大 PWM。
+ * @param  targetSpeed: 当前轮目标速度，符号表示行驶方向
+ * @return 对应方向的最大补偿 PWM
+ */
+static int16_t BaseControl_GetStallBoostPwm(float targetSpeed)
+{
+	if((g_eBaseControlAction == BASE_ACTION_ROTATE_LEFT) ||
+		(g_eBaseControlAction == BASE_ACTION_ROTATE_RIGHT))
+	{
+		return (targetSpeed >= 0.0f) ? BASE_CONTROL_ROTATE_START_BOOST_PWM :
+			-BASE_CONTROL_ROTATE_START_BOOST_PWM;
+	}
+	return (targetSpeed >= 0.0f) ? BASE_CONTROL_FORWARD_STALL_BOOST_PWM :
+		-BASE_CONTROL_BACKWARD_START_BOOST_PWM;
+}
+
+/**
+ * @brief  在固定目标速度下为单轮执行带滞回和冷却时间的卡滞补偿。
+ * @param  normalPwm: 当前前馈与 PI 计算得到的常规 PWM
+ * @param  targetSpeed: 当前轮目标速度
+ * @param  measuredSpeed: 当前轮滤波后的实测速度
+ * @param  state: 当前轮的卡滞状态
+ * @param  now: 当前系统时钟，单位 ms
+ * @return 应发送给该轮的最终 PWM
+ */
+static int16_t BaseControl_ApplyStallCompensation(int16_t normalPwm, float targetSpeed,
+	float measuredSpeed, BaseControl_StallState_t *state, uint32_t now)
+{
+	float measuredMagnitude;
+
+	if((state == NULL) || ((targetSpeed > -0.01f) && (targetSpeed < 0.01f)))
+	{
+		if(state != NULL)
+		{
+			BaseControl_ResetStallState(state);
+		}
+		return normalPwm;
+	}
+
+	measuredMagnitude = (measuredSpeed >= 0.0f) ? measuredSpeed : -measuredSpeed;
+	if(measuredMagnitude > BASE_CONTROL_STALL_RELEASE_SPEED)
+	{
+		BaseControl_ResetStallState(state);
+		return normalPwm;
+	}
+
+	if(measuredMagnitude < BASE_CONTROL_STALL_ENTER_SPEED)
+	{
+		if(state->lowSpeedActive == 0u)
+		{
+			state->lowSpeedActive = 1u;
+			state->lowSpeedStartTick = now;
+		}
+		if((now - state->lowSpeedStartTick) >= BASE_CONTROL_STALL_CONFIRM_MS)
+		{
+			state->stalled = 1u;
+		}
+	}
+
+	if(state->boostActive != 0u)
+	{
+		if((now - state->boostStartTick) < BASE_CONTROL_STALL_BOOST_MS)
+		{
+			state->boostPwm = BaseControl_GetStallBoostPwm(targetSpeed);
+			return state->boostPwm;
+		}
+		state->boostActive = 0u;
+		state->boostPwm = 0;
+		state->cooldownUntilTick = now + BASE_CONTROL_STALL_COOLDOWN_MS;
+	}
+
+	if((state->stalled != 0u) && ((int32_t)(now - state->cooldownUntilTick) >= 0))
+	{
+		state->boostActive = 1u;
+		state->boostStartTick = now;
+		state->boostPwm = BaseControl_GetStallBoostPwm(targetSpeed);
+		return state->boostPwm;
+	}
+
+	state->boostPwm = 0;
+	return normalPwm;
+}
+
+/**
+ * @brief  为已经验证需要高起转 PWM 的动作立即启动单轮补偿。
+ * @param  state: 当前轮的卡滞状态
+ * @param  targetSpeed: 当前轮目标速度
+ * @param  now: 当前系统时钟，单位 ms
+ * @return None
+ */
+static void BaseControl_PrimeStallBoost(BaseControl_StallState_t *state,
+	float targetSpeed, uint32_t now)
+{
+	if(state == NULL)
+	{
+		return;
+	}
+	BaseControl_ResetStallState(state);
+	state->lowSpeedActive = 1u;
+	state->stalled = 1u;
+	state->boostActive = 1u;
+	state->lowSpeedStartTick = now;
+	state->boostStartTick = now;
+	state->boostPwm = BaseControl_GetStallBoostPwm(targetSpeed);
+}
 static void BaseControl_InitPiIfNeeded(void)
 {
 	if(g_ucBasePiInitialized != 0u)
@@ -195,6 +331,8 @@ static void BaseControl_ResetPiState(void)
 	/* 下次采样直接使用最新编码器速度，避免模式切换沿用旧滤波值。 */
 	g_ucBaseSpeedFilterReady = 0u;
 	g_ucBaseBackwardRampActive = 0u;
+	BaseControl_ResetStallState(&g_tBaseRightStall);
+	BaseControl_ResetStallState(&g_tBaseLeftStall);
 }
 
 /**
@@ -685,6 +823,7 @@ uint8_t BaseControl_StartPiAction(BaseControl_Action_t action)
 {
 	float rightTargetSpeed = 0.0f;
 	float leftTargetSpeed = 0.0f;
+	uint32_t now;
 
 	switch(action)
 	{
@@ -720,8 +859,15 @@ uint8_t BaseControl_StartPiAction(BaseControl_Action_t action)
 	BaseControl_SetPiTargetsInternal(rightTargetSpeed, leftTargetSpeed);
 	if(action == BASE_ACTION_BACKWARD)
 	{
-		/* 目标已从 -2.00 SPD 起步，后续由 PI 周期平滑增加。 */
+		/* 目标已从 -1.50 SPD 起步，后续由 PI 周期平滑增加。 */
 		g_ucBaseBackwardRampActive = 1u;
+	}
+	if((action == BASE_ACTION_BACKWARD) || (action == BASE_ACTION_ROTATE_LEFT) ||
+		(action == BASE_ACTION_ROTATE_RIGHT))
+	{
+		now = HAL_GetTick();
+		BaseControl_PrimeStallBoost(&g_tBaseRightStall, rightTargetSpeed, now);
+		BaseControl_PrimeStallBoost(&g_tBaseLeftStall, leftTargetSpeed, now);
 	}
 	return 1u;
 }
@@ -745,6 +891,7 @@ void BaseControl_UpdateWheelPi(float rightMeasuredSpeed, float leftMeasuredSpeed
 {
 	int16_t rightPwm;
 	int16_t leftPwm;
+	uint32_t now;
 
 	if((g_ucBasePiEnable == 0u) || ((g_eBaseControlState != BASE_STATE_PI_SPEED) &&
 		(g_eBaseControlState != BASE_STATE_LINE_TRACK) &&
@@ -759,30 +906,14 @@ void BaseControl_UpdateWheelPi(float rightMeasuredSpeed, float leftMeasuredSpeed
 	leftPwm = (int16_t)(BaseControl_AddForwardActionFeedforward(BaseControl_SpeedToFeedforwardPwm(g_tBasePiLeft.targetSpeed)) +
 		PiSpeed_Update(&g_tBasePiLeft, leftMeasuredSpeed, periodS));
 
-	/* 地面静止时用动作专用 PWM 跨过静摩擦，轮子起转后仍由 PI 闭环调速。 */
-	if((g_eBaseControlAction == BASE_ACTION_BACKWARD) &&
-		(rightMeasuredSpeed > -BASE_CONTROL_START_SPEED_EPSILON) &&
-		(rightMeasuredSpeed < BASE_CONTROL_START_SPEED_EPSILON) &&
-		(leftMeasuredSpeed > -BASE_CONTROL_START_SPEED_EPSILON) &&
-		(leftMeasuredSpeed < BASE_CONTROL_START_SPEED_EPSILON))
-	{
-		rightPwm = -BASE_CONTROL_BACKWARD_START_BOOST_PWM;
-		leftPwm = -BASE_CONTROL_BACKWARD_START_BOOST_PWM;
-	}
-	else if(((g_eBaseControlAction == BASE_ACTION_ROTATE_LEFT) ||
-		(g_eBaseControlAction == BASE_ACTION_ROTATE_RIGHT)) &&
-		(rightMeasuredSpeed > -BASE_CONTROL_START_SPEED_EPSILON) &&
-		(rightMeasuredSpeed < BASE_CONTROL_START_SPEED_EPSILON) &&
-		(leftMeasuredSpeed > -BASE_CONTROL_START_SPEED_EPSILON) &&
-		(leftMeasuredSpeed < BASE_CONTROL_START_SPEED_EPSILON))
-	{
-		rightPwm = (g_tBasePiRight.targetSpeed >= 0.0f) ?
-			BASE_CONTROL_ROTATE_START_BOOST_PWM : -BASE_CONTROL_ROTATE_START_BOOST_PWM;
-		leftPwm = (g_tBasePiLeft.targetSpeed >= 0.0f) ?
-			BASE_CONTROL_ROTATE_START_BOOST_PWM : -BASE_CONTROL_ROTATE_START_BOOST_PWM;
-	}
+	/* 单轮卡滞时仅替换被卡住一侧的 PWM，另一侧继续按自身 PI 调速。 */
+	now = HAL_GetTick();
+	rightPwm = BaseControl_ApplyStallCompensation(rightPwm,
+		g_tBasePiRight.targetSpeed, rightMeasuredSpeed, &g_tBaseRightStall, now);
+	leftPwm = BaseControl_ApplyStallCompensation(leftPwm,
+		g_tBasePiLeft.targetSpeed, leftMeasuredSpeed, &g_tBaseLeftStall, now);
 	BaseControl_ApplyPwm(rightPwm, leftPwm);
-	/* 后退从约 -52 PWM 平滑起步，避免首次反向命令直接接近满 PWM。 */
+	/* 后退先以静摩擦补偿起转，再由目标速度斜坡平滑过渡到闭环输出。 */
 	if(g_ucBaseBackwardRampActive != 0u)
 	{
 		float rightTarget = BaseControl_RampTarget(g_tBasePiRight.targetSpeed,
@@ -828,6 +959,34 @@ void BaseControl_GetPiStatus(float *leftTargetSpeed, float *rightTargetSpeed,
 	}
 }
 
+/**
+ * @brief  获取左右轮卡滞检测和当前补偿 PWM，供 STATUSDBG 回传。
+ * @param  leftStalled: 左轮是否已确认卡滞，可为 NULL
+ * @param  rightStalled: 右轮是否已确认卡滞，可为 NULL
+ * @param  leftBoostPwm: 左轮当前卡滞补偿 PWM，可为 NULL
+ * @param  rightBoostPwm: 右轮当前卡滞补偿 PWM，可为 NULL
+ * @return None
+ */
+void BaseControl_GetStallStatus(uint8_t *leftStalled, uint8_t *rightStalled,
+	int16_t *leftBoostPwm, int16_t *rightBoostPwm)
+{
+	if(leftStalled != NULL)
+	{
+		*leftStalled = g_tBaseLeftStall.stalled;
+	}
+	if(rightStalled != NULL)
+	{
+		*rightStalled = g_tBaseRightStall.stalled;
+	}
+	if(leftBoostPwm != NULL)
+	{
+		*leftBoostPwm = g_tBaseLeftStall.boostPwm;
+	}
+	if(rightBoostPwm != NULL)
+	{
+		*rightBoostPwm = g_tBaseRightStall.boostPwm;
+	}
+}
 /**
  * @brief  设置红外循迹开环基础 PWM。
  * @param  pwm: 循迹直行时的基础 PWM

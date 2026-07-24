@@ -236,6 +236,10 @@ static void BaseProtocol_SendStatus(const char *seq, uint8_t includeDebug)
 	float piRightTarget;
 	int16_t piLeftPwm;
 	int16_t piRightPwm;
+	uint8_t leftStalled;
+	uint8_t rightStalled;
+	int16_t leftBoostPwm;
+	int16_t rightBoostPwm;
 
 	line1 = (HAL_GPIO_ReadPin(HW_OUT_1_GPIO_Port, HW_OUT_1_Pin) == GPIO_PIN_SET) ? 1u : 0u;
 	line2 = (HAL_GPIO_ReadPin(HW_OUT_2_GPIO_Port, HW_OUT_2_Pin) == GPIO_PIN_SET) ? 1u : 0u;
@@ -256,6 +260,7 @@ static void BaseProtocol_SendStatus(const char *seq, uint8_t includeDebug)
 	}
 
 	BaseControl_GetPiStatus(&piLeftTarget, &piRightTarget, &piLeftPwm, &piRightPwm);
+	BaseControl_GetStallStatus(&leftStalled, &rightStalled, &leftBoostPwm, &rightBoostPwm);
 	batteryMv = BaseAdc_ReadBatteryVoltageMv();
 	if(batteryMv < 0)
 	{
@@ -269,7 +274,7 @@ static void BaseProtocol_SendStatus(const char *seq, uint8_t includeDebug)
 	if(includeDebug != 0u)
 	{
 		(void)sprintf(g_acBaseProtocolStatusDetail,
-			"STATE=%s,SAFE=%s,VBAT=%s,LINE=%u%u%u%u,ACT=%s,LINEACT=%s,ENC_R=%d,ENC_L=%d,SPD_R=%.2f,SPD_L=%.2f,PI=%s,TGTSPD_R=%.2f,TGTSPD_L=%.2f,PWM_R=%d,PWM_L=%d,PIOUT_R=%d,PIOUT_L=%d",
+			"STATE=%s,SAFE=%s,VBAT=%s,LINE=%u%u%u%u,ACT=%s,LINEACT=%s,ENC_R=%d,ENC_L=%d,SPD_R=%.2f,SPD_L=%.2f,PI=%s,TGTSPD_R=%.2f,TGTSPD_L=%.2f,PWM_R=%d,PWM_L=%d,PIOUT_R=%d,PIOUT_L=%d,STALL_R=%u,STALL_L=%u,BOOST_R=%d,BOOST_L=%d",
 			BaseProtocol_GetStateText(),
 			(BaseControl_GetSafetyEnable() != 0u) ? "ON" : "OFF",
 			batteryText,
@@ -279,7 +284,9 @@ static void BaseProtocol_SendStatus(const char *seq, uint8_t includeDebug)
 			(BaseControl_GetPiEnable() != 0u) ? "ON" : "OFF",
 			piRightTarget, piLeftTarget,
 			Motor_GetLastCmd1(), Motor_GetLastCmd2(),
-			(int)piRightPwm, (int)piLeftPwm);
+			(int)piRightPwm, (int)piLeftPwm,
+			(unsigned int)rightStalled, (unsigned int)leftStalled,
+			(int)rightBoostPwm, (int)leftBoostPwm);
 	}
 	else
 	{

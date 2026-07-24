@@ -15,8 +15,9 @@ OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 RESULT_IMAGE_PATH = OUTPUT_DIR / "depth_offset_scan.jpg"
 MASK_IMAGE_PATH = OUTPUT_DIR / "depth_offset_mask.jpg"
 
-CAMERA_PATH = "/dev/video0"
-CAMERA_INDEX = 0
+# 当前 Astra 重枚举后，RGB 主图像节点为 /dev/video1；/dev/video2 不作为 RGB 使用。
+CAMERA_PATH = "/dev/video1"
+CAMERA_INDEX = 1
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 WARMUP_FRAMES = 10
